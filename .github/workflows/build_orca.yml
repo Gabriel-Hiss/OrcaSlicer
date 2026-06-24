@@ -17,6 +17,10 @@ on:
           required: false
           type: boolean
           default: false
+        windows-compiler:
+          required: false
+          type: string
+          default: msvc
 
 jobs:
   build_orca:
@@ -285,17 +289,23 @@ jobs:
 
 # Windows
       - name: setup MSVC
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc'
         uses: microsoft/setup-msbuild@v3
 
+      - name: setup MSVC dev cmd for clang-cl
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'clangcl'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install nsis
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         run: |
           dir "C:/Program Files (x86)/Windows Kits/10/Include"
           choco install nsis
 
       - name: Build slicer Win
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc'
         working-directory: ${{ github.workspace }}
         # Orca: Removed Netfabb STL fixing service support in favor of CGAL.
         # env:
@@ -303,54 +313,89 @@ jobs:
         #   WindowsSDKVersion: '10.0.26100.0\'
         run: .\build_release_vs.bat slicer
 
+      - name: Build slicer Win clang-cl
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'clangcl'
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          clang-cl --version
+          lld-link --version
+          ninja --version
+
+          $depsPrefix = Join-Path $env:GITHUB_WORKSPACE 'deps/build/OrcaSlicer_dep/usr/local'
+          if (-not (Test-Path $depsPrefix)) {
+              throw "Dependency prefix not found: $depsPrefix"
+          }
+
+          $cmakeArgs = @(
+              '-S', '.',
+              '-B', 'build-clangcl',
+              '-G', 'Ninja',
+              '-DORCA_TOOLS=ON',
+              '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
+              "-DCMAKE_PREFIX_PATH=$depsPrefix",
+              '-DCMAKE_C_COMPILER=clang-cl',
+              '-DCMAKE_CXX_COMPILER=clang-cl',
+              '-DCMAKE_LINKER=lld-link',
+              '-DCMAKE_BUILD_TYPE=Release'
+          )
+
+          if ($env:ORCA_UPDATER_SIG_KEY) {
+              $cmakeArgs += "-DORCA_UPDATER_SIG_KEY=$env:ORCA_UPDATER_SIG_KEY"
+          }
+
+          cmake @cmakeArgs
+          cmake --build build-clangcl --target all --parallel
+          cmake --build build-clangcl --target install --parallel
+
       - name: Create installer Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         working-directory: ${{ github.workspace }}/build
         run: |
           cpack -G NSIS
 
       - name: Pack app
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc'
         working-directory: ${{ github.workspace }}/build
         shell: cmd
         run: '"C:/Program Files/7-Zip/7z.exe" a -tzip OrcaSlicer_Windows_${{ env.ver }}_portable.zip ${{ github.workspace }}/build/OrcaSlicer'
 
       - name: Pack PDB
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         working-directory: ${{ github.workspace }}/build/src/Release
         shell: cmd
         run: '"C:/Program Files/7-Zip/7z.exe" a -m0=lzma2 -mx9 Debug_PDB_${{ env.ver }}_for_developers_only.7z  *.pdb'
 
       - name: Upload artifacts Win zip
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc'
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_${{ env.ver }}_portable
           path: ${{ github.workspace }}/build/OrcaSlicer
 
       - name: Upload artifacts Win installer
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_${{ env.ver }}
           path: ${{ github.workspace }}/build/OrcaSlicer*.exe
 
       - name: Upload artifacts Win PDB
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
           name: PDB
           path: ${{ github.workspace }}/build/src/Release/Debug_PDB_${{ env.ver }}_for_developers_only.7z
 
       - name: Upload OrcaSlicer_profile_validator Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Windows_${{ env.ver }}
           path: ${{ github.workspace }}/build/src/Release/OrcaSlicer_profile_validator.exe
 
       - name: Deploy Windows release portable
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -361,7 +406,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows release installer
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -372,7 +417,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows OrcaSlicer_profile_validator release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -383,7 +428,7 @@ jobs:
           max_releases: 1
 
       - name: Build MSIX Store package Win
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         working-directory: ${{ github.workspace }}
         shell: pwsh
         run: |
@@ -395,7 +440,7 @@ jobs:
             -PublisherDisplayName "${{ vars.ORCA_MSIX_PUBLISHER_DISPLAY_NAME || 'OrcaSlicer' }}"
 
       - name: Upload artifacts Win MSIX
-        if: runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.windows-compiler == 'msvc' && !vars.SELF_HOSTED
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Windows_MSIX_${{ env.ver }}

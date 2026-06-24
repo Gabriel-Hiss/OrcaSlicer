@@ -74,14 +74,39 @@ jobs:
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
     secrets: inherit
-  build_windows:
+  build_windows_deps:
+    name: Build Windows Deps
     # Don't run scheduled builds on forks:
     if: ${{ !cancelled() && (github.event_name != 'schedule' || github.repository == 'OrcaSlicer/OrcaSlicer') }}
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: ${{ vars.SELF_HOSTED && 'orca-win-server' || 'windows-latest' }}
-      build-deps-only: ${{ inputs.build-deps-only || false }}
-      force-build: ${{ github.event_name == 'schedule' }}
+      build-deps-only: true
+      force-build: true
+      build-orca: false
+      cache-key-suffix: -windows-${{ github.run_id }}
+    secrets: inherit
+  build_windows_msvc:
+    name: Build Windows MSVC
+    needs: build_windows_deps
+    if: ${{ !cancelled() && needs.build_windows_deps.result == 'success' && !inputs.build-deps-only }}
+    uses: ./.github/workflows/build_orca.yml
+    with:
+      os: ${{ vars.SELF_HOSTED && 'orca-win-server' || 'windows-latest' }}
+      cache-key: ${{ needs.build_windows_deps.outputs.cache-key }}
+      cache-path: ${{ needs.build_windows_deps.outputs.cache-path }}
+      windows-compiler: msvc
+    secrets: inherit
+  build_windows_clangcl:
+    name: Build Windows clang-cl
+    needs: build_windows_deps
+    if: ${{ !cancelled() && needs.build_windows_deps.result == 'success' && !inputs.build-deps-only }}
+    uses: ./.github/workflows/build_orca.yml
+    with:
+      os: ${{ vars.SELF_HOSTED && 'orca-win-server' || 'windows-latest' }}
+      cache-key: ${{ needs.build_windows_deps.outputs.cache-key }}
+      cache-path: ${{ needs.build_windows_deps.outputs.cache-path }}
+      windows-compiler: clangcl
     secrets: inherit
   build_macos_arch:
     strategy:

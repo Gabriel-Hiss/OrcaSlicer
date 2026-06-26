@@ -32,8 +32,7 @@ namespace AABBTreeLines {
             {
                 Vec<LineType::Dim, typename LineType::Scalar> nearest_point;
                 const LineType& line = lines[primitive_index];
-                const Vec<LineType::Dim, typename LineType::Scalar> origin_cast = origin.template cast<typename LineType::Scalar>();
-                squared_distance = line_alg::distance_to_squared(line, origin_cast, &nearest_point);
+                squared_distance = line_alg::distance_to_squared(line, origin.template cast<typename LineType::Scalar>(), &nearest_point);
                 return nearest_point.template cast<ScalarType>();
             }
         };

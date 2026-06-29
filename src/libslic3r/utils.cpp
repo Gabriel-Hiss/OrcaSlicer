@@ -399,6 +399,7 @@ void set_log_path_and_level(const std::string& file, unsigned int level)
 
 	shutdown_console_logging();
 
+#ifdef SLIC3R_CONSOLE_LOG
 	auto console_backend = boost::make_shared<sinks::text_ostream_backend>();
 	console_backend->add_stream(boost::shared_ptr<std::ostream>(&std::cout, boost::null_deleter()));
 	console_backend->auto_flush(true);
@@ -412,6 +413,7 @@ void set_log_path_and_level(const std::string& file, unsigned int level)
 		<< ": " << expr::smessage
 	);
 	boost::log::core::get()->add_sink(g_console_log_sink);
+#endif
 
 	logging::add_common_attributes();
 

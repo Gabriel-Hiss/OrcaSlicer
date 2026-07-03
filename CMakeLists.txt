@@ -326,6 +326,19 @@ if (ORCA_SYNC_DEPS)
             message(WARNING "DEPS_DIR is ${_sync_deps_len} characters long; deep dependency builds (OpenCV) may exceed Windows MAX_PATH. Set DEPS_DIR to a shorter in-repo path if the build fails.")
         endif ()
 
+        # A configure without -G on Windows defaults to the Visual Studio
+        # generator; if the superbuild cache was created that way, remove the
+        # cmake state instead of failing with a generator mismatch. The
+        # ExternalProject stamps and installed files survive.
+        if (EXISTS "${DEPS_DIR}/CMakeCache.txt")
+            file(STRINGS "${DEPS_DIR}/CMakeCache.txt" _sync_deps_old_gen REGEX "^CMAKE_GENERATOR:INTERNAL=")
+            if (NOT "${_sync_deps_old_gen}" STREQUAL "CMAKE_GENERATOR:INTERNAL=${CMAKE_GENERATOR}")
+                message(STATUS "ORCA_SYNC_DEPS: deps superbuild was configured with a different generator, resetting its CMake state")
+                file(REMOVE "${DEPS_DIR}/CMakeCache.txt")
+                file(REMOVE_RECURSE "${DEPS_DIR}/CMakeFiles")
+            endif ()
+        endif ()
+
         message(STATUS "ORCA_SYNC_DEPS: dependencies not found - configuring deps superbuild in ${DEPS_DIR}")
         execute_process(COMMAND ${CMAKE_COMMAND} ${_sync_deps_cfg_args} RESULT_VARIABLE _sync_deps_res)
         if (NOT _sync_deps_res EQUAL 0)

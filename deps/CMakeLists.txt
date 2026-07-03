@@ -220,6 +220,18 @@ function(orcaslicer_add_cmake_project projectname)
     string(STRIP "${CMAKE_EXE_LINKER_FLAGS} ${DEPS_LINKER_FLAGS}" _deps_exe_linker_flags)
     string(STRIP "${CMAKE_SHARED_LINKER_FLAGS} ${DEPS_LINKER_FLAGS}" _deps_shared_linker_flags)
     string(STRIP "${CMAKE_MODULE_LINKER_FLAGS} ${DEPS_LINKER_FLAGS}" _deps_module_linker_flags)
+    set(_deps_linker_type_line "")
+    set(_deps_c_linker_line "")
+    set(_deps_cxx_linker_line "")
+    if (CMAKE_LINKER_TYPE)
+        set(_deps_linker_type_line "-DCMAKE_LINKER_TYPE:STRING=${CMAKE_LINKER_TYPE}")
+        if (DEFINED CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE})
+            set(_deps_c_linker_line "-DCMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE}}")
+        endif ()
+        if (DEFINED CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE})
+            set(_deps_cxx_linker_line "-DCMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE}}")
+        endif ()
+    endif ()
 
 if (NOT IS_CROSS_COMPILE OR NOT APPLE)
     ExternalProject_Add(
@@ -243,6 +255,9 @@ if (NOT IS_CROSS_COMPILE OR NOT APPLE)
             "-DCMAKE_EXE_LINKER_FLAGS:STRING=${_deps_exe_linker_flags}"
             "-DCMAKE_SHARED_LINKER_FLAGS:STRING=${_deps_shared_linker_flags}"
             "-DCMAKE_MODULE_LINKER_FLAGS:STRING=${_deps_module_linker_flags}"
+            "${_deps_linker_type_line}"
+            "${_deps_c_linker_line}"
+            "${_deps_cxx_linker_line}"
             "${_deps_c_flags_line}"
             "${_deps_cxx_flags_line}"
             -DBUILD_SHARED_LIBS:BOOL=OFF
@@ -288,6 +303,9 @@ else()
             -DCMAKE_IGNORE_PREFIX_PATH:STRING=${CMAKE_IGNORE_PREFIX_PATH}
             -DCMAKE_C_COMPILER_LAUNCHER:STRING=${CMAKE_C_COMPILER_LAUNCHER}
             -DCMAKE_CXX_COMPILER_LAUNCHER:STRING=${CMAKE_CXX_COMPILER_LAUNCHER}
+            "${_deps_linker_type_line}"
+            "${_deps_c_linker_line}"
+            "${_deps_cxx_linker_line}"
             "${_deps_c_flags_line}"
             "${_deps_cxx_flags_line}"
             -DBUILD_SHARED_LIBS:BOOL=OFF

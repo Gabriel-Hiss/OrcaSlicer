@@ -1,23 +1,30 @@
 ---
- build/cmake/wxWidgetsConfig.cmake.in | 6 +++++-
- 1 file changed, 5 insertions(+), 1 deletion(-)
+ build/cmake/wxWidgetsConfig.cmake.in | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/build/cmake/wxWidgetsConfig.cmake.in b/build/cmake/wxWidgetsConfig.cmake.in
 index 1a83f36..70ad8a4 100644
 --- a/build/cmake/wxWidgetsConfig.cmake.in
 +++ b/build/cmake/wxWidgetsConfig.cmake.in
-@@ -58,7 +58,11 @@ if(WIN32_MSVC_NAMING)
+@@ -58,7 +58,18 @@ if(WIN32_MSVC_NAMING)
      endif()
  endif()
  
 -include("${CMAKE_CURRENT_LIST_DIR}${wxPLATFORM_LIB_DIR}/@PROJECT_NAME@Targets.cmake")
-+if ((CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM") AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-+    include("${CMAKE_CURRENT_LIST_DIR}${wxPLATFORM_LIB_DIR}/vc_x64_lib/@PROJECT_NAME@Targets.cmake")
-+else()
-+    include("${CMAKE_CURRENT_LIST_DIR}${wxPLATFORM_LIB_DIR}/@PROJECT_NAME@Targets.cmake")
++# wxPLATFORM_LIB_DIR is derived from the consuming compiler, but the installed
++# layout depends on the compiler that built wxWidgets (vc_x64_lib for MSVC cl,
++# clang_x64_lib for clang-cl/icx-cl). Fall back to whatever layout exists.
++set(wxTARGETS_FILE "${CMAKE_CURRENT_LIST_DIR}${wxPLATFORM_LIB_DIR}/@PROJECT_NAME@Targets.cmake")
++if(NOT EXISTS "${wxTARGETS_FILE}")
++    file(GLOB wxTARGETS_FILE_CANDIDATES "${CMAKE_CURRENT_LIST_DIR}/*_lib/@PROJECT_NAME@Targets.cmake")
++    if(wxTARGETS_FILE_CANDIDATES)
++        list(GET wxTARGETS_FILE_CANDIDATES 0 wxTARGETS_FILE)
++    endif()
++    unset(wxTARGETS_FILE_CANDIDATES)
 +endif()
++include("${wxTARGETS_FILE}")
  
  macro(wx_inherit_property source dest name)
      # property name without _<CONFIG>
---
+-- 
 2.43.0

@@ -50,6 +50,9 @@ endif ()
 
 macro(add_debug_dep _dep)
 if (${DEP_DEBUG})
+    if (NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+        message(FATAL_ERROR "DEP_DEBUG requires the Visual Studio generator: the debug pass builds with msbuild. Reconfigure with -G \"Visual Studio ...\" or set DEP_DEBUG=OFF.")
+    endif ()
     ExternalProject_Get_Property(${_dep} BINARY_DIR)
     ExternalProject_Add_Step(${_dep} build_debug
         DEPENDEES build

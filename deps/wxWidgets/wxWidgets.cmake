@@ -21,13 +21,23 @@ else ()
     set(_wx_edge "-DwxUSE_WEBVIEW_EDGE=OFF")
 endif ()
 
+# icx-cl crashes when /MP is set and a compile fails, which breaks the
+# compiler checks in wxWidgets' configure step.
+set(_wx_msvc_multiproc "")
+if (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+    set(_wx_msvc_multiproc "-DwxBUILD_MSVC_MULTIPROC=OFF")
+endif ()
+
 orcaslicer_add_cmake_project(
     wxWidgets
     GIT_REPOSITORY "https://github.com/SoftFever/Orca-deps-wxWidgets"
     GIT_TAG v3.3.2
     GIT_SHALLOW ON
     DEPENDS ${PNG_PKG} ${ZLIB_PKG} ${EXPAT_PKG} ${JPEG_PKG}
-    PATCH_COMMAND git apply --verbose --ignore-space-change --whitespace=fix ${CMAKE_CURRENT_LIST_DIR}/0001-Clang-CL-fix.patch
+    # Reset the tree first so re-running the patch step (e.g. resuming an
+    # interrupted build) does not fail on the already applied patch.
+    PATCH_COMMAND git checkout -f -- .
+    COMMAND git apply --verbose --ignore-space-change --whitespace=fix ${CMAKE_CURRENT_LIST_DIR}/0001-Clang-CL-fix.patch
     CMAKE_ARGS
         -DwxBUILD_PRECOMP=ON
         ${_wx_toolkit}
@@ -56,6 +66,7 @@ orcaslicer_add_cmake_project(
         -DwxUSE_LIBWEBP=builtin
         -DwxUSE_EXPAT=sys
         -DwxUSE_NANOSVG=OFF
+        "${_wx_msvc_multiproc}"
 )
 
 # wxWidgets 3.3 cmake install doesn't include private headers.

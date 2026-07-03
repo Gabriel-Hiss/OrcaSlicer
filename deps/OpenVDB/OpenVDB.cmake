@@ -30,6 +30,9 @@ orcaslicer_add_cmake_project(OpenVDB
 
 if (MSVC)
     if (${DEP_DEBUG})
+        if (NOT CMAKE_GENERATOR MATCHES "Visual Studio")
+            message(FATAL_ERROR "DEP_DEBUG requires the Visual Studio generator: the debug pass builds with msbuild. Reconfigure with -G \"Visual Studio ...\" or set DEP_DEBUG=OFF.")
+        endif ()
         ExternalProject_Get_Property(dep_OpenVDB BINARY_DIR)
         ExternalProject_Add_Step(dep_OpenVDB build_debug
             DEPENDEES build

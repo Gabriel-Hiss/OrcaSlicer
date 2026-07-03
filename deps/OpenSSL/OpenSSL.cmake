@@ -17,10 +17,14 @@ else()
 endif()
 
 if(WIN32)
-    set(_conf_cmd perl Configure )
+    # OpenSSL's perl Configure honors the CC environment variable, but the
+    # VC-WIN64A makefile only works with cl (an unquoted clang-cl path with
+    # spaces, e.g. exported by CLion, silently produces no .obj files and the
+    # lib step fails with LNK1181). Pin the upstream toolchain.
+    set(_conf_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl perl Configure )
     set(_cross_comp_prefix_line "")
-    set(_make_cmd nmake)
-    set(_install_cmd nmake install_sw )
+    set(_make_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl nmake)
+    set(_install_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl nmake install_sw )
 else()
     if(APPLE)
         set(_conf_cmd export MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET} && ./Configure -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})

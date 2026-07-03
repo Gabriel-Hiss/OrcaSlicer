@@ -17,14 +17,16 @@ else()
 endif()
 
 if(WIN32)
-    # OpenSSL's perl Configure honors the CC environment variable, but the
-    # VC-WIN64A makefile only works with cl (an unquoted clang-cl path with
-    # spaces, e.g. exported by CLion, silently produces no .obj files and the
-    # lib step fails with LNK1181). Pin the upstream toolchain.
-    set(_conf_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl perl Configure )
+    # OpenSSL's perl Configure honors the CC/CXX/RC environment variables, but
+    # the VC-WIN64A makefile only works with the plain tool names: an unquoted
+    # path with spaces (e.g. exported by CLion for clang-cl or rc.exe) is
+    # embedded verbatim into the makefile, the tool never runs, and the build
+    # fails later with LNK1181 (missing .obj for CC, missing .res for RC).
+    # Pin the upstream toolchain names; they resolve via the VS environment.
+    set(_conf_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc perl Configure )
     set(_cross_comp_prefix_line "")
-    set(_make_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl nmake)
-    set(_install_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl nmake install_sw )
+    set(_make_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc nmake)
+    set(_install_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc nmake install_sw )
 else()
     if(APPLE)
         set(_conf_cmd export MACOSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET} && ./Configure -mmacosx-version-min=${CMAKE_OSX_DEPLOYMENT_TARGET})

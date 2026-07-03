@@ -18,13 +18,13 @@ orcaslicer_add_cmake_project(OpenVDB
     DEPENDS dep_TBB dep_Blosc dep_OpenEXR dep_Boost
     CMAKE_ARGS
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON 
+        -DOPENVDB_BUILD_BINARIES=OFF
         -DOPENVDB_BUILD_PYTHON_MODULE=OFF
         -DUSE_BLOSC=ON
         -DOPENVDB_CORE_SHARED=${_build_shared} 
         -DOPENVDB_CORE_STATIC=${_build_static}
         -DOPENVDB_ENABLE_RPATH:BOOL=OFF
         -DTBB_STATIC=${_build_static}
-        -DOPENVDB_BUILD_VDB_PRINT=ON
         -DDISABLE_DEPENDENCY_VERSION_CHECKS=ON # Centos6 has old zlib
 )
 

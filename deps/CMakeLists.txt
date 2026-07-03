@@ -223,6 +223,7 @@ function(orcaslicer_add_cmake_project projectname)
     set(_deps_linker_type_line "")
     set(_deps_c_linker_line "")
     set(_deps_cxx_linker_line "")
+    set(_deps_fortran_linker_line "")
     if (CMAKE_LINKER_TYPE)
         set(_deps_linker_type_line "-DCMAKE_LINKER_TYPE:STRING=${CMAKE_LINKER_TYPE}")
         if (DEFINED CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE})
@@ -230,6 +231,13 @@ function(orcaslicer_add_cmake_project projectname)
         endif ()
         if (DEFINED CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE})
             set(_deps_cxx_linker_line "-DCMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE}}")
+        endif ()
+        if (DEFINED CMAKE_Fortran_USING_LINKER_${CMAKE_LINKER_TYPE})
+            set(_deps_fortran_linker_line "-DCMAKE_Fortran_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_Fortran_USING_LINKER_${CMAKE_LINKER_TYPE}}")
+        elseif (DEFINED CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE})
+            set(_deps_fortran_linker_line "-DCMAKE_Fortran_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_CXX_USING_LINKER_${CMAKE_LINKER_TYPE}}")
+        elseif (DEFINED CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE})
+            set(_deps_fortran_linker_line "-DCMAKE_Fortran_USING_LINKER_${CMAKE_LINKER_TYPE}:STRING=${CMAKE_C_USING_LINKER_${CMAKE_LINKER_TYPE}}")
         endif ()
     endif ()
 
@@ -258,6 +266,7 @@ if (NOT IS_CROSS_COMPILE OR NOT APPLE)
             "${_deps_linker_type_line}"
             "${_deps_c_linker_line}"
             "${_deps_cxx_linker_line}"
+            "${_deps_fortran_linker_line}"
             "${_deps_c_flags_line}"
             "${_deps_cxx_flags_line}"
             -DBUILD_SHARED_LIBS:BOOL=OFF
@@ -306,6 +315,7 @@ else()
             "${_deps_linker_type_line}"
             "${_deps_c_linker_line}"
             "${_deps_cxx_linker_line}"
+            "${_deps_fortran_linker_line}"
             "${_deps_c_flags_line}"
             "${_deps_cxx_flags_line}"
             -DBUILD_SHARED_LIBS:BOOL=OFF

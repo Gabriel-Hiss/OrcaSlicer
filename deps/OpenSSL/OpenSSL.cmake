@@ -26,6 +26,7 @@ if(WIN32)
     set(_conf_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc perl Configure )
     set(_cross_comp_prefix_line "")
     set(_make_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc nmake)
+    set(_build_cmd ${_make_cmd} build_libs build_engines build_programs)
     set(_install_cmd ${CMAKE_COMMAND} -E env CC=cl CXX=cl RC=rc nmake install_sw )
 else()
     if(APPLE)
@@ -35,6 +36,7 @@ else()
     endif()
     set(_cross_comp_prefix_line "")
     set(_make_cmd make -j${NPROC})
+    set(_build_cmd ${_make_cmd})
     set(_install_cmd make -j${NPROC} install_sw)
     if (CMAKE_CROSSCOMPILING)
         set(_cross_comp_prefix_line "--cross-compile-prefix=${TOOLCHAIN_PREFIX}-")
@@ -61,10 +63,11 @@ ExternalProject_Add(dep_OpenSSL
         ${_cross_comp_prefix_line}
         no-shared
         no-asm
+        no-tests
         no-ssl3-method
         no-dynamic-engine
     BUILD_IN_SOURCE ON
-    BUILD_COMMAND ${_make_cmd}
+    BUILD_COMMAND ${_build_cmd}
     INSTALL_COMMAND ${_install_cmd}
 )
 

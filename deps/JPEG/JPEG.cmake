@@ -18,5 +18,6 @@ orcaslicer_add_cmake_project(JPEG
     CMAKE_ARGS
         -DENABLE_SHARED=OFF
         -DENABLE_STATIC=ON
+        -DWITH_TURBOJPEG=OFF
         ${jpeg_flag}
 )

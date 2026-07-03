@@ -1,7 +1,33 @@
 ---
+ build/cmake/init.cmake               | 2 +-
+ build/cmake/utils/CMakeLists.txt     | 3 ++-
  build/cmake/wxWidgetsConfig.cmake.in | 13 ++++++++++++-
- 1 file changed, 12 insertions(+), 1 deletion(-)
+ 3 files changed, 15 insertions(+), 3 deletions(-)
 
+diff --git a/build/cmake/init.cmake b/build/cmake/init.cmake
+index 8540920..e0913c4 100644
+--- a/build/cmake/init.cmake
++++ b/build/cmake/init.cmake
+@@ -187,7 +187,7 @@ if(WIN32)
+         set(wxCOMPILER_PREFIX "vc")
+     elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+         set(wxCOMPILER_PREFIX "gcc")
+-    elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
++    elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "IntelLLVM")
+         set(wxCOMPILER_PREFIX "clang")
+     else()
+         message(FATAL_ERROR "Unknown WIN32 compiler type")
+diff --git a/build/cmake/utils/CMakeLists.txt b/build/cmake/utils/CMakeLists.txt
+index 65ecaf9..9eba6a4 100644
+--- a/build/cmake/utils/CMakeLists.txt
++++ b/build/cmake/utils/CMakeLists.txt
+@@ -10,4 +10,5 @@
+-if(wxUSE_XRC)
++option(wxBUILD_WXRC "Build wxrc utility" ON)
++if(wxUSE_XRC AND wxBUILD_WXRC)
+     add_executable(wxrc "${wxSOURCE_DIR}/utils/wxrc/wxrc.cpp")
+     wx_set_common_target_properties(wxrc)
+     if(wxUSE_XML)
 diff --git a/build/cmake/wxWidgetsConfig.cmake.in b/build/cmake/wxWidgetsConfig.cmake.in
 index 1a83f36..70ad8a4 100644
 --- a/build/cmake/wxWidgetsConfig.cmake.in

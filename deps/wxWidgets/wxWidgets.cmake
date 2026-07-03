@@ -28,6 +28,11 @@ if (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
     set(_wx_msvc_multiproc "-DwxBUILD_MSVC_MULTIPROC=OFF")
 endif ()
 
+set(_wx_build_wxrc "")
+if (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+    set(_wx_build_wxrc "-DwxBUILD_WXRC=OFF")
+endif ()
+
 orcaslicer_add_cmake_project(
     wxWidgets
     GIT_REPOSITORY "https://github.com/SoftFever/Orca-deps-wxWidgets"
@@ -67,6 +72,7 @@ orcaslicer_add_cmake_project(
         -DwxUSE_EXPAT=sys
         -DwxUSE_NANOSVG=OFF
         "${_wx_msvc_multiproc}"
+        "${_wx_build_wxrc}"
 )
 
 # wxWidgets 3.3 cmake install doesn't include private headers.

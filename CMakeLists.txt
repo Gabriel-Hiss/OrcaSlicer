@@ -61,6 +61,24 @@ endif ()
 
 project(OrcaSlicer)
 
+# IntelLLVM in MSVC mode emits LLVM bitcode objects for -flto=full. MSVC link.exe
+# cannot consume them, so default to the oneAPI/LLVM linker driver unless the
+# user explicitly selected a linker.
+if (WIN32 AND MSVC AND (CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM") AND NOT CMAKE_LINKER_TYPE)
+    set(CMAKE_LINKER_TYPE oneapi_lld_driver CACHE STRING "Linker type used by CMake's linker driver support" FORCE)
+    set(CMAKE_C_USING_LINKER_oneapi_lld_driver "-fuse-ld=lld-link" CACHE STRING "IntelLLVM C linker driver flag for lld-link" FORCE)
+    set(CMAKE_CXX_USING_LINKER_oneapi_lld_driver "-fuse-ld=lld-link" CACHE STRING "IntelLLVM CXX linker driver flag for lld-link" FORCE)
+    set(CMAKE_Fortran_USING_LINKER_oneapi_lld_driver "-fuse-ld=lld-link" CACHE STRING "IntelLLVM Fortran linker driver flag for lld-link" FORCE)
+endif ()
+if (WIN32 AND MSVC AND (CMAKE_C_COMPILER_ID STREQUAL "IntelLLVM" OR CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM"))
+    foreach (_orcaslicer_linker_flags_var CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS CMAKE_MODULE_LINKER_FLAGS)
+        if (NOT "${${_orcaslicer_linker_flags_var}}" MATCHES "(^| )-fuse-ld=lld-link($| )")
+            string(STRIP "${${_orcaslicer_linker_flags_var}} -fuse-ld=lld-link" ${_orcaslicer_linker_flags_var})
+        endif ()
+    endforeach ()
+    unset(_orcaslicer_linker_flags_var)
+endif ()
+
 # Backward compatibility for old CMake versions
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_VERSION VERSION_LESS "3.25")
     set(LINUX ON CACHE BOOL "" FORCE)

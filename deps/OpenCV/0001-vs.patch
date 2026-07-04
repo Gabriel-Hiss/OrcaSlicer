@@ -2,6 +2,19 @@ diff --git a/cmake/OpenCVDetectCXXCompiler.cmake b/cmake/OpenCVDetectCXXCompiler
 index 7f229cde96..d8e20f8fe9 100644
 --- a/cmake/OpenCVDetectCXXCompiler.cmake
 +++ b/cmake/OpenCVDetectCXXCompiler.cmake
+@@ -24,7 +24,7 @@ ocv_declare_removed_variables(MINGW64 MSVC64)
+ if(NOT DEFINED CV_GCC AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+   set(CV_GCC 1)
+ endif()
+-if(NOT DEFINED CV_CLANG AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")  # Clang or AppleClang (see CMP0025)
++if(NOT DEFINED CV_CLANG AND CMAKE_CXX_COMPILER_ID MATCHES "Clang|IntelLLVM")  # Clang, AppleClang, or IntelLLVM (see CMP0025)
+   set(CV_CLANG 1)
+   set(CMAKE_COMPILER_IS_CLANGCXX 1)  # TODO next release: remove this
+   set(CMAKE_COMPILER_IS_CLANGCC 1)   # TODO next release: remove this
+diff --git a/cmake/OpenCVDetectCXXCompiler.cmake b/cmake/OpenCVDetectCXXCompiler.cmake
+index 7f229cde96..d8e20f8fe9 100644
+--- a/cmake/OpenCVDetectCXXCompiler.cmake
++++ b/cmake/OpenCVDetectCXXCompiler.cmake
 @@ -171,8 +171,10 @@ elseif(MSVC)
      set(OpenCV_RUNTIME vc15)
    elseif(MSVC_VERSION MATCHES "^192[0-9]$")

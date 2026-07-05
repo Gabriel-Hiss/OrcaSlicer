@@ -21,13 +21,6 @@ else ()
     set(_wx_edge "-DwxUSE_WEBVIEW_EDGE=OFF")
 endif ()
 
-# icx-cl crashes when /MP is set and a compile fails, which breaks the
-# compiler checks in wxWidgets' configure step.
-set(_wx_msvc_multiproc "")
-if (MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
-    set(_wx_msvc_multiproc "-DwxBUILD_MSVC_MULTIPROC=OFF")
-endif ()
-
 orcaslicer_add_cmake_project(
     wxWidgets
     GIT_REPOSITORY "https://github.com/SoftFever/Orca-deps-wxWidgets"
@@ -66,7 +59,6 @@ orcaslicer_add_cmake_project(
         -DwxUSE_LIBWEBP=builtin
         -DwxUSE_EXPAT=sys
         -DwxUSE_NANOSVG=OFF
-        "${_wx_msvc_multiproc}"
 )
 
 # wxWidgets 3.3 cmake install doesn't include private headers.

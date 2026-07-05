@@ -27,7 +27,7 @@ endif ()
 # Boost.Container's bundled dlmalloc passes int* where the Win32 Interlocked API
 # takes volatile long*; cl compiles that with a warning, clang errors out.
 set(_boost_c_flags_line "")
-if (MSVC AND CMAKE_C_COMPILER_ID MATCHES "Clang|IntelLLVM")
+if (MSVC AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
     set(_boost_c_flags_line "-DCMAKE_C_FLAGS:STRING=-Wno-incompatible-pointer-types")
 endif ()
 

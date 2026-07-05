@@ -63,7 +63,7 @@ endif()
 # pin the camel-case probes off since they only "pass" by implicit declaration.
 set(_curl_c_flags_line "")
 set(_curl_probe_overrides "")
-if (MSVC AND CMAKE_C_COMPILER_ID MATCHES "Clang|IntelLLVM")
+if (MSVC AND CMAKE_C_COMPILER_ID STREQUAL "Clang")
   set(_curl_c_flags_line "-DCMAKE_C_FLAGS:STRING=-Wno-implicit-function-declaration -Wno-incompatible-pointer-types")
   set(_curl_probe_overrides -DHAVE_IOCTLSOCKET_CAMEL=0 -DHAVE_IOCTLSOCKET_CAMEL_FIONBIO=0)
 endif ()

@@ -1069,6 +1069,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         std::string("wave_overhang_perimeter_speed"),
         std::string("wave_overhang_travel_speed"),
         std::string("wave_overhang_fan_speed"),
+        std::string("wave_overhang_aux_fan_speed"),
         std::string("wave_overhang_nozzle_temp"),
         std::string("wave_overhang_min_wave_time"),
         std::string("wave_overhang_min_layer_time"),
@@ -1115,6 +1116,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
         std::string("wave_overhang_floor_hilbert_density"),
         std::string("wave_overhang_floor_print_speed"),
         std::string("wave_overhang_floor_fan_speed"),
+        std::string("wave_overhang_floor_aux_fan_speed"),
     })
         toggle_line(k, wo_floor_hilbert);
 

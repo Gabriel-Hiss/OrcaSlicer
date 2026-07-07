@@ -852,20 +852,20 @@ std::string GCodeWriter::travel_to_xyz(const Vec3d &point, double speed_override
     //BBS: take plate offset into consider
     Vec3d point_on_plate = { dest_point(0) - m_x_offset, dest_point(1) - m_y_offset, dest_point(2) };
     // Orca: wave-overhang — honor speed override (mm/s). 0 = use config.
-    const double xyz_speed = (speed_override > 0.0) ? speed_override : this->config.travel_speed.value;
+    const double xyz_speed = (speed_override > 0.0) ? speed_override : this->config.travel_speed.get_at(get_extruder_index(this->config, filament()->id()));
     std::string out_string;
     GCodeG1Formatter w;
     if (!this->is_current_position_clear())
     {
         //force to move xy first then z after filament change
         w.emit_xy(Vec2d(point_on_plate.x(), point_on_plate.y()));
-        w.emit_f(this->config.travel_speed.get_at(get_extruder_index(this->config, filament()->id())) * 60.0);
+        w.emit_f(xyz_speed * 60.0);
         w.emit_comment(GCodeWriter::full_gcode_comment, comment);
         out_string = w.string() + _travel_to_z(point_on_plate.z(), comment);
     } else {
         GCodeG1Formatter w;
         w.emit_xyz(point_on_plate);
-        w.emit_f(this->config.travel_speed.get_at(get_extruder_index(this->config, filament()->id())) * 60.0);
+        w.emit_f(xyz_speed * 60.0);
         w.emit_comment(GCodeWriter::full_gcode_comment, comment);
         out_string = w.string();
     }

@@ -1,6 +1,7 @@
 Build
 Build.bat
 /build*/
+cmake-build-*/
 CMakeLists.txt.user
 **/CMakeLists.txt.autosave
 deps/build*

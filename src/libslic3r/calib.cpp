@@ -2,10 +2,136 @@
 #include "BoundingBox.hpp"
 #include "Config.hpp"
 #include "Model.hpp"
+#include "Emboss.hpp"
 #include "GCode.hpp"
+#include "TriangleMesh.hpp"
+
+#include <algorithm>
 #include <cmath>
+#include <iomanip>
+#include <sstream>
 
 namespace Slic3r {
+
+namespace {
+
+double round_flowrate_value(double value)
+{
+    return std::round(value * 10000.) / 10000.;
+}
+
+std::string format_abs_flowrate(double value)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(4) << std::abs(value);
+
+    std::string result = stream.str();
+    while (!result.empty() && result.back() == '0')
+        result.pop_back();
+    if (!result.empty() && result.back() == '.')
+        result.pop_back();
+
+    return result.empty() ? "0" : result;
+}
+
+std::string flowrate_object_name(double value)
+{
+    return std::string("flowrate_") + (value < -EPSILON ? "m" : "") + format_abs_flowrate(value);
+}
+
+std::string flowrate_label(double value)
+{
+    if (std::abs(value) <= EPSILON)
+        return "0";
+
+    std::string label = format_abs_flowrate(value);
+    if (label.size() > 1 && label[0] == '0' && label[1] == '.')
+        label.erase(0, 1);
+
+    return value < -EPSILON ? "-" + label : label;
+}
+
+} // namespace
+
+std::vector<double> flowrate_custom_values(const FlowRatioCustomParams &params)
+{
+    std::vector<double> values;
+
+    if (params.step_neg > 0.) {
+        for (size_t k = 1;; ++k) {
+            const double value = -static_cast<double>(k) * params.step_neg;
+            if (value < params.min_offset - EPSILON)
+                break;
+            values.emplace_back(round_flowrate_value(value));
+        }
+    }
+
+    values.emplace_back(0.);
+
+    if (params.step_pos > 0.) {
+        for (size_t k = 1;; ++k) {
+            const double value = static_cast<double>(k) * params.step_pos;
+            if (value > params.max_offset + EPSILON)
+                break;
+            values.emplace_back(round_flowrate_value(value));
+        }
+    }
+
+    std::sort(values.begin(), values.end());
+    return values;
+}
+
+bool add_flowrate_calib_blocks(Model &model, const std::vector<double> &values, const std::string &font_path)
+{
+    auto font_file = Emboss::create_font_file(font_path.c_str());
+    if (!font_file)
+        return false;
+
+    Emboss::FontFileWithCache font(std::move(font_file));
+    FontProp fp(7.f);
+    const double scale = Emboss::get_text_shape_scale(fp, *font.font_file);
+
+    for (const double value : values) {
+        const std::string obj_name = flowrate_object_name(value);
+        ModelObject *obj = model.add_object();
+        obj->name = obj_name;
+
+        TriangleMesh pad_mesh(its_make_cube(30., 20., 2.));
+        pad_mesh.translate(-15.f, -15.f, 0.f);
+        ModelVolume *pad = obj->add_volume(std::move(pad_mesh), ModelVolumeType::MODEL_PART, false);
+        pad->name = obj->name;
+
+        TriangleMesh tab_mesh(its_make_cube(23., 10.5, 0.4));
+        tab_mesh.translate(-11.5f, 4.5f, 0.f);
+        ModelVolume *tab = obj->add_volume(std::move(tab_mesh), ModelVolumeType::MODEL_PART, false);
+        tab->name = "tab";
+
+        const std::string label = flowrate_label(value);
+        ExPolygons shapes = Emboss::text2shapes(font, label.c_str(), fp);
+        if (shapes.empty())
+            return false;
+
+        BoundingBox bb = get_extents(shapes);
+        Point c = bb.center();
+        for (ExPolygon &shape : shapes)
+            shape.translate(-c.x(), -c.y());
+
+        const double width_mm = static_cast<double>(bb.size().x()) * scale;
+        const double fit = width_mm > 20. ? 20. / width_mm : 1.;
+        const double depth_mm = 0.8;
+        const double label_scale = scale * fit;
+        Transform3d tr = Eigen::Translation<double, 3>(0., 10., 0.2) * Eigen::Scaling(label_scale);
+        Emboss::ProjectTransform project(std::make_unique<Emboss::ProjectZ>(depth_mm / label_scale), tr);
+        TriangleMesh label_mesh(Emboss::polygons2model(shapes, project));
+        if (label_mesh.empty())
+            return false;
+
+        ModelVolume *label_volume = obj->add_volume(std::move(label_mesh), ModelVolumeType::NEGATIVE_VOLUME, false);
+        label_volume->name = "label";
+    }
+
+    return true;
+}
 
 // Calculate the optimal Pressure Advance speed
 float CalibPressureAdvance::find_optimal_PA_speed(const DynamicPrintConfig &config, double line_width, double layer_height, int extruder_id, int filament_idx)

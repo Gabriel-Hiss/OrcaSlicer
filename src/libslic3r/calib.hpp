@@ -46,6 +46,24 @@ struct Calib_Params
     CalibMode mode;
 };
 
+// Parameters for the user-defined (custom) YOLO flow-ratio test.
+struct FlowRatioCustomParams
+{
+    double min_offset; // most negative flow offset, <= 0 (e.g. -0.1)
+    double max_offset; // most positive flow offset, >= 0 (e.g. 0.03)
+    double step_neg;   // spacing between negative blocks, > 0 (e.g. 0.05)
+    double step_pos;   // spacing between positive blocks, > 0 (e.g. 0.025)
+};
+
+// Expand params into the sorted (ascending) list of flow offsets, always containing 0.
+std::vector<double> flowrate_custom_values(const FlowRatioCustomParams &params);
+
+// Create one calibration block object per value inside `model` (named "flowrate_<v>",
+// 'm' prefix for negative values) with the value engraved on the block tab.
+// `font_path` must point to a .ttf file. Returns false when the font cannot be
+// loaded or a label produces no glyphs; `model` must be discarded in that case.
+bool add_flowrate_calib_blocks(Model &model, const std::vector<double> &values, const std::string &font_path);
+
 enum FlowRatioCalibrationType {
     COMPLETE_CALIBRATION = 0,
     FINE_CALIBRATION,

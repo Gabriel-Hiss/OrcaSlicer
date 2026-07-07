@@ -3,6 +3,7 @@
 #include "libslic3r_version.h"
 
 #include <cstddef>
+#include <cmath>
 #include <algorithm>
 #include <numeric>
 #include <limits>
@@ -13195,6 +13196,60 @@ void Plater::calib_flowrate(bool is_linear, int pass, InfillPattern pattern) {
 
     // ORCA: pass the pattern
     adjust_settings_for_flowrate_calib(model().objects, is_linear, pass, pattern);
+    wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
+    auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
+    printer_config->set_key_value("resonance_avoidance", new ConfigOptionBool{false});
+
+    // Refresh object after scaling
+    const std::vector<size_t> object_idx(boost::counting_iterator<size_t>(0), boost::counting_iterator<size_t>(model().objects.size()));
+    changed_objects(object_idx);
+}
+
+void Plater::calib_flowrate_custom(const FlowRatioCustomParams &params, InfillPattern pattern)
+{
+    std::vector<double> values = flowrate_custom_values(params);
+    if (values.size() < 2)
+        return;
+
+    if (new_project(false, false, L"Orca YOLO Flow Calibration - Custom") == wxID_CANCEL)
+        return;
+
+    wxGetApp().mainframe->select_tab(size_t(MainFrame::tp3DEditor));
+
+    Plater::TakeSnapshot snapshot(this, "Import Object: YOLO Custom Flow Calibration");
+
+    Model tmp;
+    if (!add_flowrate_calib_blocks(tmp, values, resources_dir() + "/fonts/HarmonyOS_Sans_SC_Regular.ttf")) {
+        MessageDialog msg_dlg(nullptr, _L("Failed to generate calibration blocks (font could not be loaded)."),
+                              wxEmptyString, wxICON_WARNING | wxOK);
+        msg_dlg.ShowModal();
+        return;
+    }
+
+    const size_t n = values.size();
+    const size_t ncols = static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(n))));
+    const size_t nrows = static_cast<size_t>(std::ceil(static_cast<double>(n) / static_cast<double>(ncols)));
+    const double pitch = 32.0;
+    const Vec2d center = p->bed.build_volume().bed_center();
+    for (size_t i = 0; i < n; ++i) {
+        const size_t row = i / ncols;
+        const size_t col = i % ncols;
+        ModelInstance *inst = tmp.objects[i]->add_instance();
+        inst->set_offset(Vec3d(center.x() + (static_cast<double>(col) - (static_cast<double>(ncols) - 1.0) / 2.0) * pitch,
+                               center.y() + (static_cast<double>(row) - (static_cast<double>(nrows) - 1.0) / 2.0) * pitch,
+                               0.0));
+    }
+
+    auto obj_idxs = p->load_model_objects(tmp.objects);
+
+    canvas3D()->update_instance_printable_state_for_objects(obj_idxs);
+    Selection &sel = canvas3D()->get_selection();
+    sel.clear();
+    for (size_t idx : obj_idxs)
+        sel.add_object((unsigned int) idx, false);
+    wxGetApp().obj_list()->update_selections();
+
+    adjust_settings_for_flowrate_calib(model().objects, true, 1, pattern);
     wxGetApp().get_tab(Preset::TYPE_PRINTER)->reload_config();
     auto printer_config = &wxGetApp().preset_bundle->printers.get_edited_preset().config;
     printer_config->set_key_value("resonance_avoidance", new ConfigOptionBool{false});

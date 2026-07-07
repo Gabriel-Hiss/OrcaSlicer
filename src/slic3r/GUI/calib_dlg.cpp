@@ -1453,7 +1453,7 @@ void Cornering_Test_Dlg::on_dpi_changed(const wxRect& suggested_rect) {
 // FlowRateCalibrationDialog
 //
 FlowRateCalibrationDialog::FlowRateCalibrationDialog(wxWindow* parent, wxWindowID id, Plater* plater)
-    : DPIDialog(parent, id, _L("Flow Ratio Calibration"), wxDefaultPosition, parent->FromDIP(wxSize(-1, 280)), wxDEFAULT_DIALOG_STYLE), m_plater(plater)
+    : DPIDialog(parent, id, _L("Flow Ratio Calibration"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE), m_plater(plater)
 {
     SetBackgroundColour(*wxWHITE); // make sure background color set for dialog
     SetForegroundColour(wxColour("#363636"));
@@ -1466,7 +1466,7 @@ FlowRateCalibrationDialog::FlowRateCalibrationDialog(wxWindow* parent, wxWindowI
     auto labeled_box_type = new LabeledStaticBox(this, _L("Calibration Test Type"));
     auto type_box = new wxStaticBoxSizer(labeled_box_type, wxVERTICAL);
 
-    m_rbType = new RadioGroup(this, { _L("Pass 1 (Coarse)"), _L("Pass 2 (Fine)"), _L("YOLO (Recommended)"), _L("YOLO (Perfectionist)") }, wxVERTICAL, 1);
+    m_rbType = new RadioGroup(this, { _L("Pass 1 (Coarse)"), _L("Pass 2 (Fine)"), _L("YOLO (Recommended)"), _L("YOLO (Perfectionist)"), _L("YOLO (Custom)") }, wxVERTICAL, 1);
     m_rbType->SetSelection(2); // Default to YOLO Recommended
     type_box->Add(m_rbType, 0, wxALL | wxEXPAND, FromDIP(4));
     v_sizer->Add(type_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
@@ -1501,6 +1501,61 @@ FlowRateCalibrationDialog::FlowRateCalibrationDialog(wxWindow* parent, wxWindowI
     pattern_box->Add(m_rbPattern, 0, wxALL | wxEXPAND, FromDIP(4));
     v_sizer->Add(pattern_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
 
+    // Custom range settings
+    wxString min_str      = _L("From: ");
+    wxString max_str      = _L("To: ");
+    wxString step_neg_str = _L("Step -: ");
+    wxString step_pos_str = _L("Step +: ");
+
+    int text_max = GetTextMax(this, std::vector<wxString>{min_str, max_str, step_neg_str, step_pos_str});
+
+    auto st_size = wxSize(text_max, -1);
+    auto ti_size = FromDIP(wxSize(120, -1));
+
+    auto labeled_box_custom = new LabeledStaticBox(this, _L("Custom Range"));
+    auto custom_box = new wxStaticBoxSizer(labeled_box_custom, wxVERTICAL);
+
+    custom_box->AddSpacer(FromDIP(5));
+
+    auto min_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto min_text = new wxStaticText(this, wxID_ANY, min_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiMin = new TextInput(this, wxString::FromDouble(-0.04), "", "", wxDefaultPosition, ti_size, wxTE_PROCESS_ENTER);
+    m_tiMin->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    min_sizer->Add(min_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    min_sizer->Add(m_tiMin  , 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    custom_box->Add(min_sizer, 0, wxLEFT, FromDIP(3));
+
+    auto max_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto max_text = new wxStaticText(this, wxID_ANY, max_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiMax = new TextInput(this, wxString::FromDouble(0.035), "", "", wxDefaultPosition, ti_size, wxTE_PROCESS_ENTER);
+    m_tiMax->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    max_sizer->Add(max_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    max_sizer->Add(m_tiMax  , 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    custom_box->Add(max_sizer, 0, wxLEFT, FromDIP(3));
+
+    auto step_neg_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto step_neg_text = new wxStaticText(this, wxID_ANY, step_neg_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiStepNeg = new TextInput(this, wxString::FromDouble(0.005), "", "", wxDefaultPosition, ti_size, wxTE_PROCESS_ENTER);
+    m_tiStepNeg->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    step_neg_sizer->Add(step_neg_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    step_neg_sizer->Add(m_tiStepNeg  , 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    custom_box->Add(step_neg_sizer, 0, wxLEFT, FromDIP(3));
+
+    auto step_pos_sizer = new wxBoxSizer(wxHORIZONTAL);
+    auto step_pos_text = new wxStaticText(this, wxID_ANY, step_pos_str, wxDefaultPosition, st_size, wxALIGN_LEFT);
+    m_tiStepPos = new TextInput(this, wxString::FromDouble(0.005), "", "", wxDefaultPosition, ti_size, wxTE_PROCESS_ENTER);
+    m_tiStepPos->GetTextCtrl()->SetValidator(wxTextValidator(wxFILTER_NUMERIC));
+    step_pos_sizer->Add(step_pos_text, 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    step_pos_sizer->Add(m_tiStepPos  , 0, wxALL | wxALIGN_CENTER_VERTICAL, FromDIP(2));
+    custom_box->Add(step_pos_sizer, 0, wxLEFT, FromDIP(3));
+
+    m_tiMin->Enable(false);
+    m_tiMax->Enable(false);
+    m_tiStepNeg->Enable(false);
+    m_tiStepPos->Enable(false);
+
+    v_sizer->Add(custom_box, 0, wxTOP | wxRIGHT | wxLEFT | wxEXPAND, FromDIP(10));
+
     v_sizer->AddSpacer(FromDIP(5));
 
     auto dlg_btns = new DialogButtons(this, {"OK"});
@@ -1514,6 +1569,9 @@ FlowRateCalibrationDialog::FlowRateCalibrationDialog(wxWindow* parent, wxWindowI
 
     dlg_btns->GetOK()->Bind(wxEVT_BUTTON, &FlowRateCalibrationDialog::on_start, this);
 
+    // Connect Events
+    m_rbType->Connect(wxEVT_COMMAND_RADIOBOX_SELECTED, wxCommandEventHandler(FlowRateCalibrationDialog::on_type_changed), NULL, this);
+
     wxGetApp().UpdateDlgDarkUI(this);
 
     Layout();
@@ -1523,6 +1581,15 @@ FlowRateCalibrationDialog::FlowRateCalibrationDialog(wxWindow* parent, wxWindowI
 
 FlowRateCalibrationDialog::~FlowRateCalibrationDialog() {
     // Disconnect Events
+    m_rbType->Disconnect(wxEVT_COMMAND_RADIOBOX_SELECTED, wxCommandEventHandler(FlowRateCalibrationDialog::on_type_changed), NULL, this);
+}
+
+void FlowRateCalibrationDialog::on_type_changed(wxCommandEvent& event) {
+    bool enable_custom = m_rbType->GetSelection() == 4;
+    m_tiMin->Enable(enable_custom);
+    m_tiMax->Enable(enable_custom);
+    m_tiStepNeg->Enable(enable_custom);
+    m_tiStepPos->Enable(enable_custom);
 }
 
 void FlowRateCalibrationDialog::on_start(wxCommandEvent& event) {
@@ -1532,6 +1599,29 @@ void FlowRateCalibrationDialog::on_start(wxCommandEvent& event) {
     InfillPattern pattern = ipArchimedeanChords;
     if (patternIdx == 1) pattern = ipMonotonic;
     
+    if (type == 4) {
+        FlowRatioCustomParams p;
+        bool ok = m_tiMin->GetTextCtrl()->GetValue().ToDouble(&p.min_offset);
+        ok = ok && m_tiMax->GetTextCtrl()->GetValue().ToDouble(&p.max_offset);
+        ok = ok && m_tiStepNeg->GetTextCtrl()->GetValue().ToDouble(&p.step_neg);
+        ok = ok && m_tiStepPos->GetTextCtrl()->GetValue().ToDouble(&p.step_pos);
+        // Range-check before expanding the value list: a tiny step over a wide
+        // range would otherwise generate an unbounded number of values.
+        ok = ok && p.min_offset <= 0. && p.max_offset >= 0. && p.min_offset >= -0.5 && p.max_offset <= 0.5
+                && p.step_neg >= 0.001 && p.step_pos >= 0.001;
+        size_t count = ok ? flowrate_custom_values(p).size() : 0;
+        if (!ok || count < 2 || count > 32) {
+            MessageDialog msg_dlg(nullptr,
+                _L("Please input valid values:\nFrom: -0.5 to 0\nTo: 0 to 0.5\nStep - / Step +: >= 0.001\nResulting block count: 2 to 32"),
+                wxEmptyString, wxICON_WARNING | wxOK);
+            msg_dlg.ShowModal();
+            return;
+        }
+        m_plater->calib_flowrate_custom(p, pattern);
+        EndModal(wxID_OK);
+        return;
+    }
+
     bool is_linear = (type >= 2);
     int pass = (type % 2) + 1;
 

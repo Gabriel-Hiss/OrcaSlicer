@@ -190,10 +190,15 @@ public:
 
 protected:
     virtual void on_start(wxCommandEvent& event);
+    void on_type_changed(wxCommandEvent& event);
 
     RadioGroup* m_rbType;
     // ORCA: use standard OrcaSlicer ComboBox instead of BitmapComboBox
     ComboBox* m_rbPattern;
+    TextInput* m_tiMin;
+    TextInput* m_tiMax;
+    TextInput* m_tiStepNeg;
+    TextInput* m_tiStepPos;
     Plater* m_plater;
 };
 }} // namespace Slic3r::GUI

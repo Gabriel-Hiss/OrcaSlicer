@@ -2591,14 +2591,14 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             }
             if (any_wave_debug) {
                 // The BUILD line only carries what Orca's own trailing `; key = value`
-                // config block doesn't already expose: our fork version, and the Orca
-                // base version we were cut from. Printer, filament, layer height,
+                // config block doesn't already expose: the Orca version used for this
+                // debug output. Printer, filament, layer height,
                 // nozzle/bed temps, flow ratio and support flags are all emitted by
                 // Orca below; the website parser's config-block fallback reads them
                 // from there so duplicating here just made the header noisy.
                 file.write_format(
-                    "; WAVE_OVERHANG_BUILD wave_overhangs_version=%s orca_base=%s\n",
-                    WAVE_OVERHANGS_VERSION, SoftFever_VERSION);
+                    "; WAVE_OVERHANG_BUILD orca_version=%s\n",
+                    SoftFever_VERSION);
 
                 size_t region_idx = 0;
                 for (const PrintRegion *region : print.m_print_regions) {

@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.13)
 project(deps_src)
-
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if (CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(/clang:-O2 /clang:-flto=full)
+    elseif (CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(/clang:-O2)
+    endif()
+endif()
 # Include all dependency subdirectories
 
 # Header-only libraries (INTERFACE)

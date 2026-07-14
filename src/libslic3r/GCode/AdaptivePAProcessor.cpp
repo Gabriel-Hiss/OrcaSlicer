@@ -9,6 +9,7 @@
 #include <iostream>
 #include <cmath>
 #include <cctype>
+#include <cstdlib>
 
 namespace Slic3r {
 
@@ -75,6 +76,19 @@ std::string AdaptivePAProcessor::process_layer(std::string &&gcode) {
 
     // Iterate through each line of the layer G-code
     while (std::getline(stream, line)) {
+        constexpr char filament_modifier_pa_marker[] = ";_FILAMENT_MODIFIER_PA ";
+        if (line.compare(0, sizeof(filament_modifier_pa_marker) - 1, filament_modifier_pa_marker) == 0) {
+            const char *value = line.c_str() + sizeof(filament_modifier_pa_marker) - 1;
+            char *end = nullptr;
+            const double pa = std::strtod(value, &end);
+            while (std::isspace(static_cast<unsigned char>(*end)))
+                ++end;
+            if (end != value && *end == '\0' && std::isfinite(pa) && pa >= 0.0) {
+                m_last_predicted_pa = pa;
+                continue;
+            }
+        }
+
         
         // If a wipe start command is found, ignore all speed changes till the wipe end part is found
         if (line.find("WIPE_START") != std::string::npos) {

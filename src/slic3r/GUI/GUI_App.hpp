@@ -575,6 +575,7 @@ public:
     Tab*            get_plate_tab();
     Tab*            get_model_tab(bool part = false);
     Tab*            get_layer_tab();
+    Tab*            get_filament_modifier_tab();
     ConfigOptionMode get_saved_mode();
     ConfigOptionMode get_mode();
     std::string     get_saved_mode_str();

@@ -1432,6 +1432,14 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "min_bead_width") {
             steps.emplace_back(posSlice);
         } else if (
+               opt_key == "print_flow_ratio"
+            || opt_key == "modifier_nozzle_temperature"
+            || opt_key == "modifier_max_volumetric_speed"
+            || opt_key == "modifier_pressure_advance"
+            || opt_key == "modifier_fan_speed"
+            || opt_key == "modifier_aux_fan_speed") {
+            steps.emplace_back(posPerimeters);
+        } else if (
                opt_key == "seam_position"
             || opt_key == "seam_slope_type"
             || opt_key == "seam_slope_conditional"
@@ -1464,7 +1472,6 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "bed_mesh_max"
             || opt_key == "adaptive_bed_mesh_margin"
             || opt_key == "bed_mesh_probe_distance"
-            || opt_key == "print_flow_ratio"
             || opt_key == "first_layer_flow_ratio"
             || opt_key == "top_solid_infill_flow_ratio"
             || opt_key == "bottom_solid_infill_flow_ratio"

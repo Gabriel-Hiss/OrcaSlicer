@@ -1595,8 +1595,15 @@ void ObjectList::list_manipulation(const wxPoint& mouse_pos, bool evt_context_me
                 dynamic_cast<TabPrintPlate*>(wxGetApp().get_plate_tab())->reset_model_config();
             else if (m_objects_model->GetItemType(item) & itLayer)
                 dynamic_cast<TabPrintLayer*>(wxGetApp().get_layer_tab())->reset_model_config();
-            else if (item.IsOk())
-                dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(vol_idx >= 0))->reset_model_config();
+            else if (item.IsOk()) {
+                const bool is_fmod = vol_idx >= 0 && obj_idx >= 0 && obj_idx < int(m_objects->size()) &&
+                                     vol_idx < int((*m_objects)[obj_idx]->volumes.size()) &&
+                                     (*m_objects)[obj_idx]->volumes[vol_idx]->is_filament_modifier();
+                if (is_fmod)
+                    dynamic_cast<TabPrintModel*>(wxGetApp().get_filament_modifier_tab())->reset_model_config();
+                else
+                    dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(vol_idx >= 0))->reset_model_config();
+            }
             wxGetApp().params_panel()->notify_object_config_changed();
         }
         else if (col_num == colName)
@@ -2150,7 +2157,7 @@ bool ObjectList::is_instance_or_object_selected()
     return selection.is_single_full_instance() || selection.is_single_full_object();
 }
 
-void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false*/)
+void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false*/, bool filament_modifier/* = false*/)
 {
     wxDataViewItem item = GetSelection();
     // we can add volumes for Object or Instance
@@ -2184,7 +2191,7 @@ void ObjectList::load_subobject(ModelVolumeType type, bool from_galery/* = false
     if (type == ModelVolumeType::MODEL_PART)
         load_part(*(*m_objects)[obj_idx], volumes, type, from_galery);
     else*/
-        load_modifier(input_files, *(*m_objects)[obj_idx], volumes, type, from_galery);
+        load_modifier(input_files, *(*m_objects)[obj_idx], volumes, type, from_galery, filament_modifier);
 
     if (volumes.empty())
         return;
@@ -2268,7 +2275,7 @@ void ObjectList::load_part(ModelObject& model_object, std::vector<ModelVolume*>&
     }
 }
 */
-void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery)
+void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery, bool filament_modifier)
 {
     // ! ysFIXME - delete commented code after testing and rename "load_modifier" to something common
     //if (type == ModelVolumeType::MODEL_PART)
@@ -2374,6 +2381,7 @@ void ObjectList::load_modifier(const wxArrayString& input_files, ModelObject& mo
         TriangleMesh mesh = model.mesh();
         // Mesh will be centered when loading.
         ModelVolume* new_volume = model_object.add_volume(std::move(mesh), type);
+        new_volume->set_filament_modifier(filament_modifier);
         new_volume->name = boost::filesystem::path(input_file).filename().string();
 
         // adjust offset as prusaslicer ObjectList::load_from_files does (works) instead of BBS method
@@ -2438,7 +2446,7 @@ static TriangleMesh create_mesh(const std::string& type_name, const BoundingBoxf
     return mesh;
 }
 
-void ObjectList::load_generic_subobject(const std::string& type_name, const ModelVolumeType type)
+void ObjectList::load_generic_subobject(const std::string& type_name, const ModelVolumeType type, bool filament_modifier)
 {
     // BBS: single snapshot
     Plater::SingleSnapshot single(wxGetApp().plater());
@@ -2474,6 +2482,7 @@ void ObjectList::load_generic_subobject(const std::string& type_name, const Mode
 
 	// Mesh will be centered when loading.
     ModelVolume *new_volume = model_object.add_volume(std::move(mesh), type);
+    new_volume->set_filament_modifier(filament_modifier);
 
     // First (any) GLVolume of the selected instance. They all share the same instance matrix.
     const GLVolume* v = selection.get_first_volume();
@@ -2914,6 +2923,7 @@ void ObjectList::split()
             volume->type(),// is_modifier() ? ModelVolumeType::PARAMETER_MODIFIER : ModelVolumeType::MODEL_PART,
             volume->is_text(),
             volume->is_svg(),
+            volume->is_filament_modifier(),
 			get_warning_icon_name(volume->mesh().stats()),
             volume->config.has("extruder") ? volume->config.extruder() : 0,
             false);
@@ -4186,6 +4196,7 @@ wxDataViewItemArray ObjectList::add_volumes_to_object_in_list(size_t obj_idx, st
                 volume->type(),
                 volume->is_text(),
                 volume->is_svg(),
+                volume->is_filament_modifier(),
                 get_warning_icon_name(volume->mesh().stats()),
                 volume->config.has("extruder") ? volume->config.extruder() : 0,
                 false);
@@ -6509,7 +6520,13 @@ void ObjectList::OnEditingStarted(wxDataViewEvent &event)
 
         get_selected_item_indexes(obj_idx, vol_idx, item);
         //wxGetApp().plater()->PopupObjectTable(obj_idx, vol_idx, mouse_pos);
-        dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(vol_idx >= 0))->reset_model_config();
+        const bool is_fmod = vol_idx >= 0 && obj_idx >= 0 && obj_idx < int(m_objects->size()) &&
+                             vol_idx < int((*m_objects)[obj_idx]->volumes.size()) &&
+                             (*m_objects)[obj_idx]->volumes[vol_idx]->is_filament_modifier();
+        if (is_fmod)
+            dynamic_cast<TabPrintModel*>(wxGetApp().get_filament_modifier_tab())->reset_model_config();
+        else
+            dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(vol_idx >= 0))->reset_model_config();
         return;
     }
 #ifdef __WXOSX__

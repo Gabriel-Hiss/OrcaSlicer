@@ -194,17 +194,19 @@ GuiCfg create_gui_configuration();
 // use private definition
 struct GLGizmoSVG::GuiCfg: public ::GuiCfg{};
 
-bool GLGizmoSVG::create_volume(ModelVolumeType volume_type, const Vec2d &mouse_pos)
+bool GLGizmoSVG::create_volume(ModelVolumeType volume_type, const Vec2d &mouse_pos, bool filament_modifier)
 {
     CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    input.filament_modifier = filament_modifier;
     DataBasePtr base = create_emboss_data_base(m_job_cancel, volume_type);
     if (!base) return false; // Uninterpretable svg
     return start_create_volume(input, std::move(base), mouse_pos);
 }
 
-bool GLGizmoSVG::create_volume(ModelVolumeType volume_type) 
+bool GLGizmoSVG::create_volume(ModelVolumeType volume_type, bool filament_modifier)
 {
     CreateVolumeParams input = create_input(m_parent, m_raycast_manager, volume_type);
+    input.filament_modifier = filament_modifier;
     DataBasePtr base = create_emboss_data_base(m_job_cancel,volume_type);
     if (!base) return false; // Uninterpretable svg
     return start_create_volume_without_position(input, std::move(base));

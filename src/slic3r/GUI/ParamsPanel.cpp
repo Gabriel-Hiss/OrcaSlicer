@@ -452,6 +452,10 @@ void ParamsPanel::create_layout()
         m_left_sizer->Add(m_tab_print_layer, 0, wxEXPAND);
     }
 
+    if (m_tab_filament_modifier) {
+        m_left_sizer->Add( m_tab_filament_modifier, 0, wxEXPAND );
+    }
+
     if (m_tab_filament) {
         //m_filament_sizer = new wxBoxSizer( wxVERTICAL );
         //m_filament_sizer->Add( m_tab_filament, 1, wxEXPAND | wxALL, 5 );
@@ -534,6 +538,7 @@ void ParamsPanel::refresh_tabs()
         m_tab_print_object = wxGetApp().get_model_tab();
         m_tab_print_part = wxGetApp().get_model_tab(true);
         m_tab_print_layer = wxGetApp().get_layer_tab();
+        m_tab_filament_modifier = wxGetApp().get_filament_modifier_tab();
     }
     return;
 }
@@ -580,6 +585,8 @@ void ParamsPanel::set_active_tab(wxPanel* tab)
     if (cur_tab == nullptr) {
         if (!m_mode_region->GetValue()) {
             cur_tab = (Tab*) m_tab_print;
+        } else if (m_tab_filament_modifier && ((TabPrintModel*)m_tab_filament_modifier)->has_model_config()) {
+            cur_tab = (Tab*)m_tab_filament_modifier;
         } else if (m_tab_print_part && ((TabPrintModel*) m_tab_print_part)->has_model_config()) {
             cur_tab = (Tab*) m_tab_print_part;
         } else if (m_tab_print_layer && ((TabPrintModel*)m_tab_print_layer)->has_model_config()) {
@@ -608,6 +615,7 @@ void ParamsPanel::set_active_tab(wxPanel* tab)
             {m_tab_print_object, m_staticline_print_object},
             {m_tab_print_part, m_staticline_print_part},
             {m_tab_print_layer, nullptr},
+            {m_tab_filament_modifier, nullptr},
             {m_tab_print_plate, nullptr},
             {m_tab_filament, m_staticline_filament},
             {m_tab_printer, m_staticline_printer}})) {
@@ -688,7 +696,7 @@ void ParamsPanel::msw_rescale()
     {
         m_mode_view->Rescale();
     }
-    for (auto tab : {m_tab_print, m_tab_print_plate, m_tab_print_object, m_tab_print_part, m_tab_print_layer, m_tab_filament, m_tab_printer}) {
+    for (auto tab : {m_tab_print, m_tab_print_plate, m_tab_print_object, m_tab_print_part, m_tab_print_layer, m_tab_filament_modifier, m_tab_filament, m_tab_printer}) {
         if (tab) dynamic_cast<Tab*>(tab)->msw_rescale();
     }
     //((Button*)m_export_to_file)->Rescale();

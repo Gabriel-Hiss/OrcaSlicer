@@ -3864,6 +3864,66 @@ void TabPrintPart::notify_changed(ObjectBase * object)
     wxGetApp().obj_list()->object_config_options_changed({vol->get_object(), vol});
 }
 
+TabFilamentModifier::TabFilamentModifier(ParamsPanel* parent) :
+    TabPrintModel(parent, { "modifier_nozzle_temperature", "modifier_max_volumetric_speed", "modifier_pressure_advance", "print_flow_ratio", "modifier_fan_speed", "modifier_aux_fan_speed" })
+{
+    m_parent_tab = wxGetApp().get_model_tab();
+}
+
+void TabFilamentModifier::notify_changed(ObjectBase * object)
+{
+    auto vol = dynamic_cast<ModelVolume*>(object);
+    wxGetApp().obj_list()->object_config_options_changed({vol->get_object(), vol});
+}
+
+void TabFilamentModifier::build()
+{
+    m_presets = &m_prints;
+    TabPrint::build();
+    init_options_list();
+
+    // Orca: mirror the material tab layout (see TabFilament::build) but bound to the per-region
+    // modifier_* keys, so a filament modifier volume exposes only filament-relevant settings.
+    auto filament_page = add_options_page(L("Filament"), "empty");
+        auto optgroup = filament_page->new_optgroup(L("Print temperature"));
+            optgroup->append_single_option_line("modifier_nozzle_temperature");
+        optgroup = filament_page->new_optgroup(L("Flow ratio and Pressure Advance"));
+            optgroup->append_single_option_line("print_flow_ratio");
+            optgroup->append_single_option_line("modifier_pressure_advance");
+        optgroup = filament_page->new_optgroup(L("Volumetric speed limitation"));
+            optgroup->append_single_option_line("modifier_max_volumetric_speed");
+    auto cooling_page = add_options_page(L("Cooling"), "empty");
+        optgroup = cooling_page->new_optgroup(L("Part cooling fan"));
+            optgroup->append_single_option_line("modifier_fan_speed");
+        optgroup = cooling_page->new_optgroup(L("Auxiliary part cooling fan"));
+            optgroup->append_single_option_line("modifier_aux_fan_speed");
+
+    // The two pages just created were appended at the end; move them to the front keeping their order.
+    m_pages.pop_back();
+    m_pages.pop_back();
+    m_pages.insert(m_pages.begin(), cooling_page);
+    m_pages.insert(m_pages.begin(), filament_page);
+
+    for (auto p : m_pages) {
+        const bool is_own_page = (p == filament_page || p == cooling_page);
+        for (auto g : p->m_optgroups) {
+            // Strip every option from the inherited process pages (this also removes the duplicate
+            // print_flow_ratio line); keep only the supported keys on our own pages.
+            if (is_own_page)
+                g->remove_option_if([this](auto &key) { return !has_key(key); });
+            else
+                g->remove_option_if([](auto &) { return true; });
+            g->have_sys_config = [this] { m_back_to_sys = true; return true; };
+        }
+        p->m_optgroups.erase(std::remove_if(p->m_optgroups.begin(), p->m_optgroups.end(), [](auto & g) {
+            return g->get_lines().empty();
+        }), p->m_optgroups.end());
+    }
+    m_pages.erase(std::remove_if(m_pages.begin(), m_pages.end(), [](auto & p) {
+        return p->m_optgroups.empty();
+    }), m_pages.end());
+}
+
 static std::string layer_height = "layer_height";
 TabPrintLayer::TabPrintLayer(ParamsPanel* parent) :
     TabPrintModel(parent, concat({ layer_height }, PrintRegionConfig().keys()))

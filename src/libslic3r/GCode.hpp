@@ -499,6 +499,9 @@ private:
     std::string     extrude_perimeters(const Print& print, const std::vector<ObjectByExtruder::Island::Region>& by_region, bool is_first_layer, bool is_infill_first);
     std::string     extrude_infill(const Print& print, const std::vector<ObjectByExtruder::Island::Region>& by_region, bool ironing);
     std::string     extrude_support(const ExtrusionEntityCollection& support_fills, const ExtrusionRole support_extrusion_role);
+    void            filament_modifier_capture_base();
+    std::string     filament_modifier_transition();
+    std::string     filament_modifier_reset();
 
     // BBS
     LiftType to_lift_type(ZHopType z_hop_types);
@@ -616,6 +619,19 @@ private:
     // Used by wave_overhang_min_layer_time; reset at each layer change.
     double                              m_wave_layer_accumulated_time = 0.;
 
+    struct FilamentModifierConfig {
+        int    nozzle_temperature {};
+        double max_volumetric_speed {};
+        double pressure_advance {};
+        double print_flow_ratio {};
+        int    fan_speed {};
+        int    aux_fan_speed {};
+    };
+    FilamentModifierConfig              m_fmod_base_config;
+    bool                                m_fmod_base_config_valid { false };
+    int                                 m_fmod_active_temp { 0 };
+    double                              m_fmod_active_pa { -1. };
+
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;
 
@@ -669,6 +685,7 @@ private:
     int get_highest_bed_temperature(const bool is_first_layer,const Print &print) const;
 
     double      calc_max_volumetric_speed(const double layer_height, const double line_width, const std::string co_str);
+    std::string _extrude_with_filament_modifier(const ExtrusionPath &path, std::string description = "", double speed = -1);
     std::string _extrude(const ExtrusionPath &path, std::string description = "", double speed = -1);
     bool _needSAFC(const ExtrusionPath &path);
     void print_machine_envelope(GCodeOutputStream& file, Print& print);

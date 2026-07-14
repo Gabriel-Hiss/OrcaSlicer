@@ -1092,6 +1092,8 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             // Reset Adaptive PA processor last PA value
             gcodegen.m_pa_processor->resetPreviousPA(gcodegen.config().pressure_advance.get_at(new_filament_id));
         }
+        gcodegen.m_fmod_active_temp = 0;
+        gcodegen.m_fmod_active_pa = -1.;
 
         // A phony move to the end position at the wipe tower.
         gcodegen.writer().travel_to_xy((end_pos + plate_origin_2d).cast<double>());
@@ -1373,6 +1375,8 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             // Reset Adaptive PA processor last PA value
             gcodegen.m_pa_processor->resetPreviousPA(gcodegen.config().pressure_advance.get_at(new_extruder_id));
         }
+        gcodegen.m_fmod_active_temp = 0;
+        gcodegen.m_fmod_active_pa = -1.;
 
         // A phony move to the end position at the wipe tower.
         gcodegen.writer().travel_to_xy((end_pos + plate_origin_2d).cast<double>());
@@ -2533,6 +2537,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
     this->apply_print_config(print.config());
     m_config.apply(print.default_object_config());
     m_config.apply(print.default_region_config());
+    filament_modifier_capture_base();
 
     //m_volumetric_speed = DoExport::autospeed_volumetric_limit(print);
     print.throw_if_canceled();
@@ -4710,6 +4715,8 @@ LayerResult GCode::process_layer(
         // Nothing to extrude.
         return result;
 
+    std::string gcode = filament_modifier_reset();
+
     // Extract 1st object_layer and support_layer of this set of layers with an equal print_z.
     coordf_t             print_z       = layer.print_z;
     //BBS: using layer id to judge whether the layer is first layer is wrong. Because if the normal
@@ -4719,8 +4726,10 @@ LayerResult GCode::process_layer(
     m_writer.set_is_first_layer(first_layer);
     unsigned int         first_extruder_id = layer_tools.extruders.front();
 
-    // Initialize config with the 1st object to be printed at this layer.
+    // Initialize config with the base region and 1st object to be printed at this layer.
+    m_config.apply(print.default_region_config());
     m_config.apply(layer.object()->config(), true);
+    filament_modifier_capture_base();
 
     // Check whether it is possible to apply the spiral vase logic for this layer.
     // Just a reminder: A spiral vase mode is allowed for a single object, single material print only.
@@ -4741,7 +4750,6 @@ LayerResult GCode::process_layer(
         m_enable_loop_clipping = !enable;
     }
 
-    std::string gcode;
     assert(is_decimal_separator_point()); // for the sprintfs
 
     // add tag for processor
@@ -4791,6 +4799,7 @@ LayerResult GCode::process_layer(
     // BBS: don't use lazy_raise when enable spiral vase
     gcode += this->change_layer(print_z);  // this will increase m_layer_index
     m_layer = &layer;
+    gcode += filament_modifier_reset();
     m_object_layer_over_raft = false;
 
     if (!m_config.time_lapse_gcode.value.empty() && !is_BBL_Printer()) {
@@ -5369,6 +5378,10 @@ LayerResult GCode::process_layer(
     m_skirt_group_done.resize(print.skirt_brim_groups().size());
     for (unsigned int extruder_id : layer_tools.extruders)
     {
+        gcode += filament_modifier_reset();
+        m_config.apply(print.default_region_config());
+        m_config.apply(layer.object()->config(), true);
+        filament_modifier_capture_base();
         if (print.config().skirt_type == stCombined && !print.skirt_brim_groups().empty()) {
             for (size_t group_idx = 0; group_idx < print.skirt_brim_groups().size(); ++group_idx) {
                 const Print::SkirtBrimGroup& group = print.skirt_brim_groups()[group_idx];
@@ -5459,11 +5472,7 @@ LayerResult GCode::process_layer(
             for (InstanceToPrint &instance_to_print : instances_to_print) {
                 const auto& inst = instance_to_print.print_object.instances()[instance_to_print.instance_id];
                 const LayerToPrint &layer_to_print = layers[instance_to_print.layer_id];
-                if (print_wipe_extrusions == (is_anything_overridden ? 1 : 0)) {
-                    gcode += generate_object_skirt_group(print, instance_to_print.print_object, layer_tools, layer, extruder_id);
-                    gcode += generate_object_brim(print, instance_to_print.print_object, first_layer);
-                }
-
+                gcode += filament_modifier_reset();
                 // To control print speed of the 1st object layer printed over raft interface.
                 bool object_layer_over_raft = layer_to_print.object_layer && layer_to_print.object_layer->id() > 0 &&
                     instance_to_print.print_object.slicing_parameters().raft_layers() == layer_to_print.object_layer->id();
@@ -5471,6 +5480,12 @@ LayerResult GCode::process_layer(
                 m_config.apply(instance_to_print.print_object.config(), true);
                 m_layer = layer_to_print.layer();
                 m_object_layer_over_raft = object_layer_over_raft;
+                filament_modifier_capture_base();
+                if (print_wipe_extrusions == (is_anything_overridden ? 1 : 0)) {
+                    gcode += generate_object_skirt_group(print, instance_to_print.print_object, layer_tools, layer, extruder_id);
+                    gcode += generate_object_brim(print, instance_to_print.print_object, first_layer);
+                }
+
                 if (m_config.reduce_crossing_wall)
                     m_avoid_crossing_perimeters.init_layer(*m_layer);
 
@@ -5516,6 +5531,7 @@ LayerResult GCode::process_layer(
                     m_layer = layers[instance_to_print.layer_id].support_layer;
                     m_object_layer_over_raft = false;
 
+                    gcode += filament_modifier_reset();
                     //BBS: print supports' brims first
                     if (this->m_objSupportsWithBrim.find(instance_to_print.print_object.id()) != this->m_objSupportsWithBrim.end() && !print_wipe_extrusions) {
                         this->set_origin(0., 0.);
@@ -5597,6 +5613,7 @@ LayerResult GCode::process_layer(
                     gcode += this->extrude_infill(print,by_region_specific, true);
                 }
 
+                gcode += filament_modifier_reset();
                 if (this->config().gcode_label_objects) {
                     gcode += std::string("; stop printing object ") +
                              instance_to_print.print_object.model_object()->name +
@@ -5625,6 +5642,7 @@ LayerResult GCode::process_layer(
             }
         }
     }
+    gcode += filament_modifier_reset();
     if (first_layer) {
         for (auto iter = by_extruder.begin(); iter != by_extruder.end(); ++iter) {
             if (!iter->second.empty())
@@ -6062,7 +6080,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
     
     if (!enable_seam_slope) {
         for (const ExtrusionPath& path : paths) {
-            gcode += this->_extrude(path, description, speed_for_path(path));
+            gcode += this->_extrude_with_filament_modifier(path, description, speed_for_path(path));
             // Orca: Adaptive PA - dont adapt PA after the first multipath extrusion is completed
             // as we have already set the PA value to the average flow over the totality of the path
             // in the first extrude move
@@ -6099,7 +6117,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop&        loop_ref,
 
         // Then extrude it
         for (const ExtrusionPath* path : new_loop.get_all_paths()) {
-            gcode += this->_extrude(*path, description, speed_for_path(*path));
+            gcode += this->_extrude_with_filament_modifier(*path, description, speed_for_path(*path));
             // Orca: Adaptive PA - dont adapt PA after the first pultipath extrusion is completed
             // as we have already set the PA value to the average flow over the totality of the path
             // in the first extrude move
@@ -6204,7 +6222,7 @@ std::string GCode::extrude_multi_path(const ExtrusionMultiPath& multipath, const
     // Orca: end of multipath average mm3_per_mm value calculation
 
     for (const ExtrusionPath &path : multipath.paths){
-        gcode += this->_extrude(path, description, speed);
+        gcode += this->_extrude_with_filament_modifier(path, description, speed);
         // Orca: Adaptive PA - dont adapt PA after the first pultipath extrusion is completed
         // as we have already set the PA value to the average flow over the totality of the path
         // in the first extrude move.
@@ -6252,7 +6270,7 @@ std::string GCode::extrude_path(const ExtrusionPath& path, const std::string& de
     m_multi_flow_segment_path_pa_set = false;
     m_multi_flow_segment_path_average_mm3_per_mm = 0;
     //    description += ExtrusionEntity::role_to_string(path.role());
-    std::string gcode = this->_extrude(path, description, speed);
+    std::string gcode = this->_extrude_with_filament_modifier(path, description, speed);
     if (m_wipe.enable && FILAMENT_CONFIG(wipe)) {
         m_wipe.path = path.polyline.to_polyline();
         if (is_tree(this->config().support_type) && is_support(path.role())) {
@@ -6273,6 +6291,109 @@ std::string GCode::extrude_path(const ExtrusionPath& path, const std::string& de
     return gcode;
 }
 
+void GCode::filament_modifier_capture_base()
+{
+    m_fmod_base_config = {
+        m_config.modifier_nozzle_temperature.value,
+        m_config.modifier_max_volumetric_speed.value,
+        m_config.modifier_pressure_advance.value,
+        m_config.print_flow_ratio.value,
+        m_config.modifier_fan_speed.value,
+        m_config.modifier_aux_fan_speed.value
+    };
+    m_fmod_base_config_valid = true;
+}
+
+std::string GCode::filament_modifier_transition()
+{
+    const int t_ov = m_config.modifier_nozzle_temperature.value;
+    const double p_ov = m_config.modifier_pressure_advance.value;
+    if (t_ov <= 0 && m_fmod_active_temp == 0 && p_ov < 0. && m_fmod_active_pa < 0.)
+        return {};
+    if (m_writer.filament() == nullptr)
+        return {};
+
+    std::string gcode;
+    const int filament_id = m_writer.filament()->id();
+    const int tool = int(get_extruder_id(filament_id));
+    if (t_ov > 0 && t_ov != m_fmod_active_temp) {
+        gcode += m_writer.set_temperature(t_ov, false, tool);
+        m_fmod_active_temp = t_ov;
+    } else if (t_ov <= 0 && m_fmod_active_temp != 0) {
+        const int base = (m_layer == nullptr || on_first_layer() || m_config.nozzle_temperature.get_at(filament_id) == 0)
+            ? m_config.nozzle_temperature_initial_layer.get_at(filament_id)
+            : m_config.nozzle_temperature.get_at(filament_id);
+        if (base > 0)
+            gcode += m_writer.set_temperature(base, false, tool);
+        m_fmod_active_temp = 0;
+    }
+
+    if (p_ov >= 0. && p_ov != m_fmod_active_pa) {
+        gcode += m_writer.set_pressure_advance(p_ov);
+        char buf[64];
+        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %g\n", p_ov);
+        gcode += buf;
+        m_fmod_active_pa = p_ov;
+    } else if (p_ov < 0. && m_fmod_active_pa >= 0.) {
+        const double base = m_config.enable_pressure_advance.get_at(filament_id) ? m_config.pressure_advance.get_at(filament_id) : 0.;
+        gcode += m_writer.set_pressure_advance(base);
+        char buf[64];
+        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %g\n", base);
+        gcode += buf;
+        m_fmod_active_pa = -1.;
+    }
+
+    return gcode;
+}
+
+std::string GCode::filament_modifier_reset()
+{
+    if (!m_fmod_base_config_valid)
+        return {};
+
+    m_config.modifier_nozzle_temperature.value = m_fmod_base_config.nozzle_temperature;
+    m_config.modifier_max_volumetric_speed.value = m_fmod_base_config.max_volumetric_speed;
+    m_config.modifier_pressure_advance.value = m_fmod_base_config.pressure_advance;
+    m_config.print_flow_ratio.value = m_fmod_base_config.print_flow_ratio;
+    m_config.modifier_fan_speed.value = m_fmod_base_config.fan_speed;
+    m_config.modifier_aux_fan_speed.value = m_fmod_base_config.aux_fan_speed;
+    return filament_modifier_transition();
+}
+std::string GCode::_extrude_with_filament_modifier(const ExtrusionPath &path, std::string description, double speed)
+{
+    const int region_id = path.filament_modifier_region_id();
+    if (region_id < 0 || m_layer == nullptr || size_t(region_id) >= m_layer->region_count())
+        return _extrude(path, std::move(description), speed);
+
+    const FilamentModifierConfig previous {
+        m_config.modifier_nozzle_temperature.value,
+        m_config.modifier_max_volumetric_speed.value,
+        m_config.modifier_pressure_advance.value,
+        m_config.print_flow_ratio.value,
+        m_config.modifier_fan_speed.value,
+        m_config.modifier_aux_fan_speed.value
+    };
+    const PrintRegionConfig &spatial_config = m_layer->get_region(region_id)->region().config();
+    m_config.modifier_nozzle_temperature.value   = spatial_config.modifier_nozzle_temperature.value;
+    m_config.modifier_max_volumetric_speed.value = spatial_config.modifier_max_volumetric_speed.value;
+    m_config.modifier_pressure_advance.value     = spatial_config.modifier_pressure_advance.value;
+    m_config.print_flow_ratio.value               = spatial_config.print_flow_ratio.value;
+    m_config.modifier_fan_speed.value             = spatial_config.modifier_fan_speed.value;
+    m_config.modifier_aux_fan_speed.value         = spatial_config.modifier_aux_fan_speed.value;
+
+    std::string gcode = filament_modifier_transition();
+    gcode += _extrude(path, std::move(description), speed);
+
+    m_config.modifier_nozzle_temperature.value   = previous.nozzle_temperature;
+    m_config.modifier_max_volumetric_speed.value = previous.max_volumetric_speed;
+    m_config.modifier_pressure_advance.value     = previous.pressure_advance;
+    m_config.print_flow_ratio.value               = previous.print_flow_ratio;
+    m_config.modifier_fan_speed.value             = previous.fan_speed;
+    m_config.modifier_aux_fan_speed.value         = previous.aux_fan_speed;
+    return gcode;
+}
+
+
 // Extrude perimeters: Decide where to put seams (hide or align seams).
 std::string GCode::extrude_perimeters(const Print &print, const std::vector<ObjectByExtruder::Island::Region> &by_region, bool is_first_layer, bool is_infill_first)
 {
@@ -6285,10 +6406,12 @@ std::string GCode::extrude_perimeters(const Print &print, const std::vector<Obje
             const bool should_print = is_first_layer ? !is_infill_first
                 : (m_config.is_infill_first == is_infill_first);
             if (!should_print) continue;
+            gcode += filament_modifier_transition();
 
             for (const ExtrusionEntity* ee : region.perimeters)
                 gcode += this->extrude_entity(*ee, "perimeter", -1., region.perimeters);
         }
+    gcode += filament_modifier_reset();
     return gcode;
 }
 
@@ -6307,6 +6430,7 @@ std::string GCode::extrude_infill(const Print &print, const std::vector<ObjectBy
                     extrusions.emplace_back(ee);
             if (! extrusions.empty()) {
                 m_config.apply(print.get_print_region(&region - &by_region.front()).config());
+                gcode += filament_modifier_transition();
                 chain_and_reorder_extrusion_entities(extrusions, m_last_pos.to_point());
                 for (const ExtrusionEntity *fill : extrusions) {
                     auto *eec = dynamic_cast<const ExtrusionEntityCollection*>(fill);
@@ -6318,6 +6442,7 @@ std::string GCode::extrude_infill(const Print &print, const std::vector<ObjectBy
                 }
             }
         }
+    gcode += filament_modifier_reset();
     return gcode;
 }
 
@@ -6345,7 +6470,7 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
         return small_perimeter_speed > 0 ? small_perimeter_speed : default_speed;
     };
 
-    std::string gcode;
+    std::string gcode = filament_modifier_reset();
     if (!support_fills.entities.empty()) {
 
         ExtrusionEntitiesPtr extrusions;
@@ -6548,6 +6673,16 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         char buf[64];
         snprintf(buf, sizeof(buf), ";_WAVE_OVERHANG_FAN_START %d %d\n",
                  wave_floor_main_fan, wave_floor_aux_fan);
+        gcode += buf;
+    }
+    const int fmod_main_fan = m_config.modifier_fan_speed.value;
+    const int fmod_aux_fan  = m_config.modifier_aux_fan_speed.value;
+    const bool filament_modifier_fan_active = (fmod_main_fan >= 0 || fmod_aux_fan >= 0)
+                                             && m_enable_cooling_markers;
+    if (filament_modifier_fan_active) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_FAN_START %d %d\n",
+                 fmod_main_fan, fmod_aux_fan);
         gcode += buf;
     }
 
@@ -6769,15 +6904,18 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             throw Slic3r::InvalidArgument("Invalid speed");
         }
     }
-    //BBS: if not set the speed, then use the filament_max_volumetric_speed directly
-    double filament_max_volumetric_speed = FILAMENT_CONFIG(filament_max_volumetric_speed);
-    if (FILAMENT_CONFIG(filament_adaptive_volumetric_speed)){
+    //BBS: if not set the speed, then use the effective filament max volumetric speed directly
+    const double modifier_max_volumetric_speed = m_config.modifier_max_volumetric_speed.value;
+    double effective_max_volumetric_speed = modifier_max_volumetric_speed > 0.
+        ? modifier_max_volumetric_speed
+        : FILAMENT_CONFIG(filament_max_volumetric_speed);
+    if (modifier_max_volumetric_speed <= 0. && FILAMENT_CONFIG(filament_adaptive_volumetric_speed)) {
         double fitted_value = calc_max_volumetric_speed(path.height, path.width, FILAMENT_CONFIG(volumetric_speed_coefficients));
-        filament_max_volumetric_speed = std::min(filament_max_volumetric_speed, fitted_value);
+        effective_max_volumetric_speed = std::min(effective_max_volumetric_speed, fitted_value);
     }
 
     if (speed == 0)
-        speed = filament_max_volumetric_speed / _mm3_per_mm;
+        speed = effective_max_volumetric_speed / _mm3_per_mm;
     
     const auto _layer = layer_id();
     if (this->on_first_layer() || object_layer_over_raft()) {
@@ -6829,9 +6967,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     //        m_config.max_volumetric_speed.value / _mm3_per_mm
     //    );
     //}
-    if (FILAMENT_CONFIG(filament_max_volumetric_speed) > 0) {
+    if (effective_max_volumetric_speed > 0) {
         // cap speed with max_volumetric_speed anyway (even if user is not using autospeed)
-        speed = std::min(speed, FILAMENT_CONFIG(filament_max_volumetric_speed) / _mm3_per_mm);
+        speed = std::min(speed, effective_max_volumetric_speed / _mm3_per_mm);
     }
     // ORCA: resonance‑avoidance on short external perimeters
 {
@@ -6844,11 +6982,11 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             m_resonance_avoidance = false;
         }
 
-        // re‑apply volumetric cap
-        if (FILAMENT_CONFIG(filament_max_volumetric_speed) > 0) {
+        // re-apply volumetric cap
+        if (effective_max_volumetric_speed > 0) {
             speed = std::min(
                 speed,
-                FILAMENT_CONFIG(filament_max_volumetric_speed) / _mm3_per_mm
+                effective_max_volumetric_speed / _mm3_per_mm
             );
         }
 
@@ -6877,10 +7015,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             bool is_external = is_external_perimeter(path.role());
             double ref_speed   = is_external ? NOZZLE_CONFIG(outer_wall_speed) : NOZZLE_CONFIG(inner_wall_speed);
             if (ref_speed == 0)
-                ref_speed = FILAMENT_CONFIG(filament_max_volumetric_speed) / _mm3_per_mm;
+                ref_speed = effective_max_volumetric_speed / _mm3_per_mm;
 
-            if (FILAMENT_CONFIG(filament_max_volumetric_speed) > 0) {
-                ref_speed = std::min(ref_speed, FILAMENT_CONFIG(filament_max_volumetric_speed) / _mm3_per_mm);
+            if (effective_max_volumetric_speed > 0) {
+                ref_speed = std::min(ref_speed, effective_max_volumetric_speed / _mm3_per_mm);
             }
             if (sloped) {
                 ref_speed = std::min(ref_speed, m_config.scarf_joint_speed.get_abs_value(ref_speed));
@@ -6984,6 +7122,13 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         new_points.clear();
     }
 
+    if (modifier_max_volumetric_speed > 0.) {
+        const double speed_cap = effective_max_volumetric_speed / _mm3_per_mm;
+        speed = std::min(speed, speed_cap);
+        for (ProcessedPoint &point : new_points)
+            point.speed = std::min(double(point.speed), speed_cap);
+    }
+
     double F = speed * 60;  // convert mm/sec to mm/min
     
     // Orca: Dynamic PA
@@ -6993,7 +7138,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                        m_curr_print->calib_mode() == CalibMode::Calib_PA_Tower; 
     bool evaluate_adaptive_pa = false;
     bool role_change = (m_last_extrusion_role != path.role());
-    if (!is_pa_calib && FILAMENT_CONFIG(adaptive_pressure_advance) && FILAMENT_CONFIG(enable_pressure_advance)) {
+    if (!is_pa_calib && FILAMENT_CONFIG(adaptive_pressure_advance) && FILAMENT_CONFIG(enable_pressure_advance) && m_config.modifier_pressure_advance.value < 0.) {
         evaluate_adaptive_pa = true;
         // If we have already emmited a PA change because the m_multi_flow_segment_path_pa_set is set
         // skip re-issuing the PA change tag.
@@ -7202,6 +7347,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                FILAMENT_CONFIG(adaptive_pressure_advance) &&
                FILAMENT_CONFIG(enable_pressure_advance) &&
                FILAMENT_CONFIG(adaptive_pressure_advance_overhangs) &&
+               m_config.modifier_pressure_advance.value < 0. &&
                !evaluate_adaptive_pa){
                 if(writer().get_current_speed() > F){ // Ramping down speed - use overhang logic where the minimum speed is used between current and upcoming extrusion
                     if(m_config.gcode_comments){
@@ -7431,7 +7577,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                 if(_mm3_per_mm >0   &&
                    EXTRUDER_CONFIG(adaptive_pressure_advance) &&
                    EXTRUDER_CONFIG(enable_pressure_advance) &&
-                   EXTRUDER_CONFIG(adaptive_pressure_advance_overhangs) ){
+                   EXTRUDER_CONFIG(adaptive_pressure_advance_overhangs) &&
+                   m_config.modifier_pressure_advance.value < 0. ){
                     if(last_set_speed > new_speed){ // Ramping down speed - use overhang logic where the minimum speed is used between current and upcoming extrusion
                         if(m_config.gcode_comments) {
                             sprintf(buf, "; Ramp up-variable\n");
@@ -7528,6 +7675,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     this->set_last_pos(path.last_point());
 
     // Orca: wave-overhang — close fan-override scope and clear state flag.
+    if (filament_modifier_fan_active)
+        gcode += ";_FILAMENT_MODIFIER_FAN_END\n";
     if (wave_fan_active || wave_floor_fan_active)
         gcode += ";_WAVE_OVERHANG_FAN_END\n";
     if (wave_temp_active && restore_nozzle_temp > 0) {
@@ -8063,6 +8212,8 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
             // Reset Adaptive PA processor last PA value
             m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(new_filament_id));
         }
+        m_fmod_active_temp = 0;
+        m_fmod_active_pa = -1.;
 
         gcode += m_writer.toolchange(new_filament_id);
         return gcode;
@@ -8371,6 +8522,8 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
         // Reset Adaptive PA processor last PA value
         m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(new_filament_id));
     }
+    m_fmod_active_temp = 0;
+    m_fmod_active_pa = -1.;
     //Orca: tool changer or IDEX's firmware may change Z position, so we set it to unknown/undefined
     m_last_pos_defined = false;
 

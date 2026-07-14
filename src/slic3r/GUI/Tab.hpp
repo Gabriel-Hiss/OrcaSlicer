@@ -570,6 +570,17 @@ protected:
 	virtual void    notify_changed(ObjectBase * object) override;
 };
 
+class TabFilamentModifier : public TabPrintModel
+{
+public:
+	//BBS: GUI refactor
+	TabFilamentModifier(ParamsPanel* parent);
+	~TabFilamentModifier() {}
+	void build() override;
+protected:
+	virtual void    notify_changed(ObjectBase* object) override;
+};
+
 class TabPrintLayer : public TabPrintModel
 {
 public:

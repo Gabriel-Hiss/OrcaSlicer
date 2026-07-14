@@ -5252,6 +5252,59 @@ void PrintConfigDef::init_fff_params()
     def->max = 350;
     def->set_default_value(new ConfigOptionInt(0));
 
+    def = this->add("modifier_nozzle_temperature", coInt);
+    def->label = L("Nozzle temperature");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Override the nozzle temperature within a filament modifier region. "
+                     "0 = use filament setting.");
+    def->sidetext = L("°C");
+    def->mode = comSimple;
+    def->min = 0;
+    def->max = max_temp;
+    def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("modifier_max_volumetric_speed", coFloat);
+    def->label = L("Max volumetric speed");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Override the max volumetric speed within a filament modifier region. "
+                     "0 = use filament setting.");
+    def->sidetext = L(u8"mm³/s");
+    def->mode = comSimple;
+    def->min = 0;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
+    def = this->add("modifier_pressure_advance", coFloat);
+    def->label = L("Pressure advance");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Override pressure advance within a filament modifier region. "
+                     "-1 = use filament setting.");
+    def->mode = comSimple;
+    def->min = -1;
+    def->max = 2;
+    def->set_default_value(new ConfigOptionFloat(-1.));
+
+    def = this->add("modifier_fan_speed", coInt);
+    def->label = L("Fan speed");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Override the part-cooling fan speed within a filament modifier region. "
+                     "-1 = use filament cooling settings.");
+    def->sidetext = L("%");
+    def->mode = comSimple;
+    def->min = -1;
+    def->max = 100;
+    def->set_default_value(new ConfigOptionInt(-1));
+
+    def = this->add("modifier_aux_fan_speed", coInt);
+    def->label = L("Aux fan speed");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Override the auxiliary part-cooling fan speed within a filament modifier region. "
+                     "-1 = use filament cooling settings.");
+    def->sidetext = L("%");
+    def->mode = comSimple;
+    def->min = -1;
+    def->max = 100;
+    def->set_default_value(new ConfigOptionInt(-1));
+
     def = this->add("wave_overhang_min_wave_time", coFloat);
     def->label = L("Min wave time");
     def->category = L("Cooling");

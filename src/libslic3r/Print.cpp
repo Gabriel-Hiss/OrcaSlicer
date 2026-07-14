@@ -2347,6 +2347,11 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     obj->set_done(posIroning);
             }
         }
+        for (PrintObject *obj : m_objects)
+            if (need_slicing_objects.count(obj) != 0)
+                for (Layer *layer : obj->layers())
+                    layer->apply_filament_modifier_regions();
+
 
         // Z-Contouring
         for (PrintObject *obj : m_objects) {
@@ -2408,6 +2413,8 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 obj->make_perimeters();
                 obj->infill();
                 obj->ironing();
+                for (Layer *layer : obj->layers())
+                    layer->apply_filament_modifier_regions();
                 obj->generate_support_material();
                 obj->detect_overhangs_for_lift();
                 obj->estimate_curled_extrusions();
@@ -4014,6 +4021,7 @@ const std::string PrintStatistics::TotalFilamentUsedWipeTowerValueMask = "; tota
 #define JSON_EXTRUSION_ROLE                    "role"
 #define JSON_EXTRUSION_NO_EXTRUSION            "no_extrusion"
 #define JSON_EXTRUSION_LOOP_ROLE               "loop_role"
+#define JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID "filament_modifier_region_id"
 
 
 static void to_json(json& j, const Points& p_s) {
@@ -4106,6 +4114,8 @@ static void to_json(json& j, const ExtrusionPath& extrusion_path) {
     j[JSON_EXTRUSION_HEIGHT] = extrusion_path.height;
     j[JSON_EXTRUSION_ROLE] = extrusion_path.role();
     j[JSON_EXTRUSION_NO_EXTRUSION] = extrusion_path.is_force_no_extrusion();
+    if (extrusion_path.filament_modifier_region_id() >= 0)
+        j[JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID] = extrusion_path.filament_modifier_region_id();
 }
 
 static bool convert_extrusion_to_json(json& entity_json, json& entity_paths_json, const ExtrusionEntity* extrusion_entity) {
@@ -4383,6 +4393,7 @@ static void from_json(const json& j, ExtrusionPath& extrusion_path) {
     extrusion_path.height                 =    j[JSON_EXTRUSION_HEIGHT];
     extrusion_path.set_extrusion_role(j[JSON_EXTRUSION_ROLE]);
     extrusion_path.set_force_no_extrusion(j[JSON_EXTRUSION_NO_EXTRUSION]);
+    extrusion_path.set_filament_modifier_region_id(j.value(JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID, -1));
 }
 
 static bool convert_extrusion_from_json(const json& entity_json, ExtrusionEntityCollection& entity_collection) {

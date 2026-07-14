@@ -227,6 +227,9 @@ struct CreateVolumeParams
 
     // Wanted additionl rotation around Z of new created volume
     std::optional<float> angle = {};
+
+    // Orca: when true, the created volume is flagged as a filament modifier
+    bool filament_modifier = false;
 };
 
 /// <summary>

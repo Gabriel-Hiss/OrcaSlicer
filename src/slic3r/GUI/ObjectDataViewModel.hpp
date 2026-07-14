@@ -111,6 +111,7 @@ class ObjectDataViewModelNode
     ModelVolumeType                 m_volume_type = ModelVolumeType(-1);
     bool                            m_is_text_volume{ false };
     bool                            m_is_svg_volume{false};
+    bool                            m_is_filament_modifier_volume{ false };
     InfoItemType                    m_info_item_type {InfoItemType::Undef};
     bool                            m_action_enable = false; // can undo all settings
     // BBS
@@ -143,6 +144,7 @@ public:
                             Slic3r::ModelVolumeType type,
                             const bool is_text_volume,
                             const bool is_svg_volume,
+                            const bool is_filament_modifier,
                             const wxString& extruder,
                             const int idx = -1 );
 
@@ -311,6 +313,7 @@ public:
     int         volume_type() const { return int(m_volume_type); }
     bool        is_text_volume() const { return m_is_text_volume; }
     bool        is_svg_volume() const { return m_is_svg_volume; }
+    bool        is_filament_modifier_volume() const { return m_is_filament_modifier_volume; }
     void        sys_color_changed();
     void        msw_rescale();
 
@@ -341,6 +344,7 @@ class ObjectDataViewModel :public wxDataViewModel
     std::vector<wxBitmap>                m_volume_bmps;
     std::vector<wxBitmap>                m_text_volume_bmps;
     std::vector<wxBitmap>                m_svg_volume_bmps;
+    wxBitmap                             m_filament_modifier_bmp;
     std::map<InfoItemType, wxBitmap>     m_info_bmps;
     wxBitmap                              m_empty_bmp;
     wxBitmap                              m_warning_bmp;
@@ -387,6 +391,7 @@ public:
                                     const Slic3r::ModelVolumeType volume_type,
                                     const bool is_text_volume,
                                     const bool is_svg_volume,
+                                    const bool is_filament_modifier = false,
                                     const std::string& warning_icon_name = std::string(),
                                     const int extruder = 0,
                                     const bool create_frst_child = true);

@@ -199,7 +199,8 @@ public:
     ExtrusionPath(ExtrusionRole role, double mm3_per_mm, float width, float height, bool no_extrusion = false) : mm3_per_mm(mm3_per_mm), width(width), height(height), m_role(role), m_no_extrusion(no_extrusion) {}
 
     ExtrusionPath(const ExtrusionPath &rhs)
-        : polyline(rhs.polyline)
+        : ExtrusionEntity(rhs)
+        , polyline(rhs.polyline)
         , overhang_degree(rhs.overhang_degree)
         , curve_degree(rhs.curve_degree)
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -215,9 +216,11 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
+        , m_filament_modifier_region_id(rhs.m_filament_modifier_region_id)
     {}
     ExtrusionPath(ExtrusionPath &&rhs)
-        : polyline(std::move(rhs.polyline))
+        : ExtrusionEntity(std::move(rhs))
+        , polyline(std::move(rhs.polyline))
         , overhang_degree(rhs.overhang_degree)
         , curve_degree(rhs.curve_degree)
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -233,9 +236,11 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
+        , m_filament_modifier_region_id(rhs.m_filament_modifier_region_id)
     {}
     ExtrusionPath(const Polyline3 &polyline, const ExtrusionPath &rhs)
-        : polyline(polyline)
+        : ExtrusionEntity(rhs)
+        , polyline(polyline)
         , overhang_degree(rhs.overhang_degree)
         , curve_degree(rhs.curve_degree)
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -251,9 +256,11 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
+        , m_filament_modifier_region_id(rhs.m_filament_modifier_region_id)
     {}
     ExtrusionPath(Polyline3 &&polyline, const ExtrusionPath &rhs)
-        : polyline(std::move(polyline))
+        : ExtrusionEntity(rhs)
+        , polyline(std::move(polyline))
         , overhang_degree(rhs.overhang_degree)
         , curve_degree(rhs.curve_degree)
         , mm3_per_mm(rhs.mm3_per_mm)
@@ -269,9 +276,11 @@ public:
         , m_can_reverse(rhs.m_can_reverse)
         , m_role(rhs.m_role)
         , m_no_extrusion(rhs.m_no_extrusion)
+        , m_filament_modifier_region_id(rhs.m_filament_modifier_region_id)
     {}
 
     ExtrusionPath& operator=(const ExtrusionPath& rhs) {
+        inset_idx = rhs.inset_idx;
         m_can_reverse = rhs.m_can_reverse;
         m_role = rhs.m_role;
         m_no_extrusion = rhs.m_no_extrusion;
@@ -287,10 +296,12 @@ public:
         this->wave_overhang_perimeter = rhs.wave_overhang_perimeter;
         this->wave_overhang_floor_perimeter = rhs.wave_overhang_floor_perimeter;
         this->wave_overhang_floor_distance = rhs.wave_overhang_floor_distance;
+        m_filament_modifier_region_id = rhs.m_filament_modifier_region_id;
         this->polyline = rhs.polyline;
         return *this;
     }
     ExtrusionPath& operator=(ExtrusionPath&& rhs) {
+        inset_idx = rhs.inset_idx;
         m_can_reverse = rhs.m_can_reverse;
         m_role = rhs.m_role;
         m_no_extrusion = rhs.m_no_extrusion;
@@ -306,6 +317,7 @@ public:
         this->wave_overhang_perimeter = rhs.wave_overhang_perimeter;
         this->wave_overhang_floor_perimeter = rhs.wave_overhang_floor_perimeter;
         this->wave_overhang_floor_distance = rhs.wave_overhang_floor_distance;
+        m_filament_modifier_region_id = rhs.m_filament_modifier_region_id;
         this->polyline = std::move(rhs.polyline);
         return *this;
     }
@@ -358,6 +370,8 @@ public:
     void set_extrusion_role(ExtrusionRole extrusion_role) { m_role = extrusion_role; }
     void set_reverse() override { m_can_reverse = false; }
     bool can_reverse() const override { return m_can_reverse; }
+    int filament_modifier_region_id() const { return m_filament_modifier_region_id; }
+    void set_filament_modifier_region_id(int region_id) { m_filament_modifier_region_id = region_id; }
 
 private:
     void _inflate_collection(const Polylines &polylines, ExtrusionEntityCollection* collection) const;
@@ -365,6 +379,7 @@ private:
     ExtrusionRole m_role;
     //BBS
     bool m_no_extrusion = false;
+    int m_filament_modifier_region_id = -1;
 };
 
 class ExtrusionPathContoured : public ExtrusionPath {
@@ -728,6 +743,9 @@ inline void extrusion_entities_append_loops_and_paths(ExtrusionEntitiesPtr &dst,
     }
     polylines.clear();
 }
+
+void set_filament_modifier_region(ExtrusionEntityCollection &collection, int region_id);
+void split_filament_modifier_region(ExtrusionEntityCollection &collection, const ExPolygons &mask, int region_id);
 
 }
 

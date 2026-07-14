@@ -5086,6 +5086,7 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                 volume->text_configuration = std::move(tc);
 
             // apply the remaining volume's metadata
+            bool is_filament_modifier = false;
             for (const Metadata& metadata : volume_data->metadata) {
                 if (metadata.key == NAME_KEY)
                     volume->name = metadata.value;
@@ -5110,11 +5111,15 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                     volume->source.is_converted_from_inches = metadata.value == "1";
                 else if (metadata.key == SOURCE_IN_METERS)
                     volume->source.is_converted_from_meters = metadata.value == "1";
+                else if (metadata.key == "filament_modifier")
+                    is_filament_modifier = metadata.value == "1";
                 else if ((metadata.key == MATRIX_KEY) || (metadata.key == MESH_SHARED_KEY))
                     continue;
                 else
                     volume->config.set_deserialize(metadata.key, metadata.value, config_substitutions);
             }
+            if (is_filament_modifier && volume->is_modifier())
+                volume->set_filament_modifier(true);
 
             // this may happen for 3mf saved by 3rd part softwares
             if (volume->name.empty()) {
@@ -7873,6 +7878,9 @@ void PlateData::parse_filament_info(GCodeProcessorResult *result)
                                 else if (volume->source.is_converted_from_meters)
                                     stream << prefix << SOURCE_IN_METERS << "\" " << VALUE_ATTR << "=\"1\"/>\n";
                             }
+
+                            if (volume->is_filament_modifier())
+                                stream << "      <" << METADATA_TAG << " " << KEY_ATTR << "=\"filament_modifier\" " << VALUE_ATTR << "=\"1\"/>\n";
 
                             // stores volume's config data
                             for (const std::string& key : volume->config.keys()) {

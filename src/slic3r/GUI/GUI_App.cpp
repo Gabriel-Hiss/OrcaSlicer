@@ -7768,6 +7768,11 @@ Tab* GUI_App::get_layer_tab()
     return model_tabs_list[2];
 }
 
+Tab* GUI_App::get_filament_modifier_tab()
+{
+    return model_tabs_list[3];
+}
+
 namespace
 {
 ConfigOptionMode saved_mode_from_string(const std::string& mode)

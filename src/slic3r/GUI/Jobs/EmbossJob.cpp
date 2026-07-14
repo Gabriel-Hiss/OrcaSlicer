@@ -57,6 +57,9 @@ struct DataCreateVolume
 
     // Define which gizmo open on the success
     GLGizmosManager::EType gizmo;
+
+    // Orca: mark the created volume as a filament modifier
+    bool filament_modifier = false;
 };
 
 // Offset of clossed side to model
@@ -136,6 +139,9 @@ struct CreateSurfaceVolumeData : public SurfaceVolumeData
 
     // Define which gizmo open on the success
     GLGizmosManager::EType gizmo;
+
+    // Orca: mark the created volume as a filament modifier
+    bool filament_modifier = false;
 };
 
 /// <summary>
@@ -213,7 +219,7 @@ void update_name_in_list(const ObjectList &object_list, const ModelVolume &volum
 /// <param name="data">Text configuration and New VolumeName</param>
 /// <param name="gizmo">Gizmo to open</param>
 void create_volume(TriangleMesh &&mesh, const ObjectID& object_id, const ModelVolumeType type, 
-    const std::optional<Transform3d>& trmat, const DataBase &data, GLGizmosManager::EType gizmo);
+    const std::optional<Transform3d>& trmat, const DataBase &data, GLGizmosManager::EType gizmo, bool filament_modifier = false);
 
 /// <summary>
 /// Create projection for cut surface from mesh
@@ -288,7 +294,7 @@ void CreateVolumeJob::finalize(bool canceled, std::exception_ptr &eptr) {
         return;
     if (m_result.its.empty()) 
         return create_message("Can't create empty volume.");
-    create_volume(std::move(m_result), m_input.object_id, m_input.volume_type, m_input.trmat, *m_input.base, m_input.gizmo);
+    create_volume(std::move(m_result), m_input.object_id, m_input.volume_type, m_input.trmat, *m_input.base, m_input.gizmo, m_input.filament_modifier);
 }
 
 
@@ -470,7 +476,7 @@ void CreateSurfaceVolumeJob::finalize(bool canceled, std::exception_ptr &eptr) {
     if (!::finalize(canceled, eptr, *m_input.base))
         return; 
     create_volume(std::move(m_result), m_input.object_id,
-        m_input.volume_type, m_input.transform, *m_input.base, m_input.gizmo);
+        m_input.volume_type, m_input.transform, *m_input.base, m_input.gizmo, m_input.filament_modifier);
 }
 
 /////////////////
@@ -521,7 +527,8 @@ bool start_create_volume_job(Worker                           &worker,
                              const std::optional<Transform3d> &volume_tr,
                              DataBasePtr                       data,
                              ModelVolumeType                   volume_type,
-                             GLGizmosManager::EType            gizmo);
+                             GLGizmosManager::EType            gizmo,
+                             bool                              filament_modifier = false);
 
 /// <summary>
 /// Find volume in selected objects with closest convex hull to screen center.
@@ -1063,7 +1070,8 @@ void create_volume(TriangleMesh                    &&mesh,
                    const ModelVolumeType             type,
                    const std::optional<Transform3d> &trmat,
                    const DataBase                   &data,
-                   GLGizmosManager::EType            gizmo)
+                   GLGizmosManager::EType            gizmo,
+                   bool                              filament_modifier)
 {
     GUI_App         &app      = wxGetApp();
     Plater          *plater   = app.plater();
@@ -1101,6 +1109,7 @@ void create_volume(TriangleMesh                    &&mesh,
     // NOTE: be carefull add volume also center mesh !!!
     // So first add simple shape(convex hull is also calculated)
     ModelVolume *volume = obj->add_volume(make_cube(1., 1., 1.), type);
+    volume->set_filament_modifier(filament_modifier);
 
     // TODO: Refactor to create better way to not set cube at begining
     // Revert mesh centering by set mesh after add cube
@@ -1436,7 +1445,8 @@ bool start_create_volume_job(Worker                           &worker,
                              const std::optional<Transform3d> &volume_tr,
                              DataBasePtr                       data,
                              ModelVolumeType                   volume_type,
-                             GLGizmosManager::EType            gizmo)
+                             GLGizmosManager::EType            gizmo,
+                             bool                              filament_modifier)
 {
     bool &use_surface = data->shape.projection.use_surface;
     std::unique_ptr<GUI::Job> job;
@@ -1447,13 +1457,13 @@ bool start_create_volume_job(Worker                           &worker,
             use_surface = false;
         } else {
             SurfaceVolumeData sfvd{*volume_tr, std::move(sources)};
-            CreateSurfaceVolumeData surface_data{std::move(sfvd), std::move(data), volume_type, object.id(), gizmo};
+            CreateSurfaceVolumeData surface_data{std::move(sfvd), std::move(data), volume_type, object.id(), gizmo, filament_modifier};
             job = std::make_unique<CreateSurfaceVolumeJob>(std::move(surface_data));
         }
     }
     if (!use_surface) {
         // create volume
-        DataCreateVolume create_volume_data{std::move(data), volume_type, object.id(), volume_tr, gizmo};
+        DataCreateVolume create_volume_data{std::move(data), volume_type, object.id(), volume_tr, gizmo, filament_modifier};
         job = std::make_unique<CreateVolumeJob>(std::move(create_volume_data));
     }
     return queue_job(worker, std::move(job));
@@ -1527,7 +1537,7 @@ bool start_create_volume_on_surface_job(CreateVolumeParams &input, DataBasePtr d
                 return false;
 
             auto gizmo_type = static_cast<GLGizmosManager::EType>(input.gizmo);
-            return start_create_volume_job(input.worker, *object, {}, std::move(data_), input.volume_type, gizmo_type);
+            return start_create_volume_job(input.worker, *object, {}, std::move(data_), input.volume_type, gizmo_type, input.filament_modifier);
         }
     };
 
@@ -1576,7 +1586,7 @@ bool start_create_volume_on_surface_job(CreateVolumeParams &input, DataBasePtr d
     Transform3d transform  = instance->get_matrix().inverse() * surface_trmat;
     auto        gizmo_type = static_cast<GLGizmosManager::EType>(input.gizmo);
     // Try to cast ray into scene and find object for add volume
-    return start_create_volume_job(input.worker, *object, transform, std::move(data), input.volume_type, gizmo_type);
+    return start_create_volume_job(input.worker, *object, transform, std::move(data), input.volume_type, gizmo_type, input.filament_modifier);
 }
 
 void create_message(const std::string &message) {

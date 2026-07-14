@@ -80,6 +80,7 @@ ObjectDataViewModelNode::ObjectDataViewModelNode(ObjectDataViewModelNode*   pare
                                                  Slic3r::ModelVolumeType    type,
                                                  const bool                 is_text_volume,
                                                  const bool                 is_svg_volume,
+                                                 const bool                 is_filament_modifier,
                                                  const wxString&            extruder,
                                                  const int                  idx/* = -1*/) :
     m_parent(parent),
@@ -88,6 +89,7 @@ ObjectDataViewModelNode::ObjectDataViewModelNode(ObjectDataViewModelNode*   pare
     m_volume_type(type),
     m_is_text_volume(is_text_volume),
     m_is_svg_volume(is_svg_volume),
+    m_is_filament_modifier_volume(is_filament_modifier),
     m_idx(idx),
     m_extruder(type == Slic3r::ModelVolumeType::MODEL_PART || type == Slic3r::ModelVolumeType::PARAMETER_MODIFIER ? extruder : "")
 {
@@ -462,6 +464,7 @@ ObjectDataViewModel::ObjectDataViewModel()
     m_volume_bmps = MenuFactory::get_volume_bitmaps();
     m_text_volume_bmps = MenuFactory::get_text_volume_bitmaps();
     m_svg_volume_bmps = MenuFactory::get_svg_volume_bitmaps();
+    m_filament_modifier_bmp = create_scaled_bitmap("spool");
     m_warning_bmp = create_scaled_bitmap(WarningIcon);
     m_warning_manifold_bmp = create_scaled_bitmap(WarningManifoldIcon);
     m_lock_bmp = create_scaled_bitmap(LockIcon);
@@ -550,6 +553,7 @@ void ObjectDataViewModel::UpdateBitmapForNode(ObjectDataViewModelNode *node)
 
     if (!node->has_warning_icon() && !node->has_lock()) {
         node->SetBitmap(is_volume_node ? (
+            node->is_filament_modifier_volume() ? m_filament_modifier_bmp :
             node->is_text_volume() ? m_text_volume_bmps.at(vol_type) : 
             node->is_svg_volume() ? m_svg_volume_bmps.at(vol_type) : 
             m_volume_bmps.at(vol_type)) : m_empty_bmp);
@@ -579,6 +583,7 @@ void ObjectDataViewModel::UpdateBitmapForNode(ObjectDataViewModelNode *node)
             if (!bmps.empty()) // ORCA: Add spacing between icons if there are multiple
                 bmps.emplace_back(create_scaled_bitmap("dot", nullptr, int(wxGetApp().em_unit() / 10) * 4));
             bmps.emplace_back(
+                node->is_filament_modifier_volume() ? m_filament_modifier_bmp :
                 node->is_text_volume() ? m_text_volume_bmps[vol_type] :
                 node->is_svg_volume() ? m_svg_volume_bmps[vol_type] : 
                 m_volume_bmps[vol_type]);
@@ -646,6 +651,7 @@ wxDataViewItem ObjectDataViewModel::AddVolumeChild( const wxDataViewItem &parent
                                                     const Slic3r::ModelVolumeType volume_type,
                                                     const bool is_text_volume,
                                                     const bool is_svg_volume,
+                                                    const bool is_filament_modifier/* = false*/,
                                                     const std::string& warning_icon_name/* = std::string()*/,
                                                     const int extruder/* = 0*/,
                                                     const bool create_frst_child/* = true*/)
@@ -661,7 +667,7 @@ wxDataViewItem ObjectDataViewModel::AddVolumeChild( const wxDataViewItem &parent
     if (create_frst_child && root->m_volumes_cnt == 0)
     {
         const Slic3r::ModelVolumeType type = Slic3r::ModelVolumeType::MODEL_PART;
-        const auto node = new ObjectDataViewModelNode(root, root->m_name, type, is_text_volume, is_svg_volume, root->m_extruder, 0);
+        const auto node = new ObjectDataViewModelNode(root, root->m_name, type, is_text_volume, is_svg_volume, false, root->m_extruder, 0);
         UpdateBitmapForNode(node, root->m_warning_icon_name, root->has_lock());
 
         insert_position < 0 ? root->Append(node) : root->Insert(node, insert_position);
@@ -685,7 +691,7 @@ wxDataViewItem ObjectDataViewModel::AddVolumeChild( const wxDataViewItem &parent
         extruder_str = wxString::Format("%d", extruder);
     }
 
-    const auto node = new ObjectDataViewModelNode(root, name, volume_type, is_text_volume, is_svg_volume, extruder_str, root->m_volumes_cnt);
+    const auto node = new ObjectDataViewModelNode(root, name, volume_type, is_text_volume, is_svg_volume, is_filament_modifier, extruder_str, root->m_volumes_cnt);
     UpdateBitmapForNode(node, warning_icon_name, root->has_lock() && volume_type < ModelVolumeType::PARAMETER_MODIFIER);
     insert_position < 0 ? root->Append(node) : root->Insert(node, insert_position);
 
@@ -2378,6 +2384,7 @@ void ObjectDataViewModel::Rescale()
     m_volume_bmps = MenuFactory::get_volume_bitmaps();
     m_text_volume_bmps = MenuFactory::get_text_volume_bitmaps();
     m_svg_volume_bmps = MenuFactory::get_svg_volume_bitmaps();
+    m_filament_modifier_bmp = create_scaled_bitmap("spool");
     m_warning_bmp = create_scaled_bitmap(WarningIcon);
     m_warning_manifold_bmp = create_scaled_bitmap(WarningManifoldIcon);
     m_lock_bmp = create_scaled_bitmap(LockIcon);

@@ -136,6 +136,16 @@ ExPolygons Layer::merged(float offset_scaled) const
     return out;
 }
 
+static bool same_filament_modifier_config(const PrintRegionConfig &lhs, const PrintRegionConfig &rhs)
+{
+    return lhs.modifier_nozzle_temperature.value   == rhs.modifier_nozzle_temperature.value
+        && lhs.modifier_max_volumetric_speed.value == rhs.modifier_max_volumetric_speed.value
+        && lhs.modifier_pressure_advance.value     == rhs.modifier_pressure_advance.value
+        && lhs.print_flow_ratio.value               == rhs.print_flow_ratio.value
+        && lhs.modifier_fan_speed.value             == rhs.modifier_fan_speed.value
+        && lhs.modifier_aux_fan_speed.value         == rhs.modifier_aux_fan_speed.value;
+}
+
 bool Layer::is_perimeter_compatible(const Print& print, const PrintRegion& a, const PrintRegion& b)
 {
     const PrintRegionConfig& config       = a.config();
@@ -280,6 +290,41 @@ void Layer::make_perimeters()
 	    }
     BOOST_LOG_TRIVIAL(trace) << "Generating perimeters for layer " << this->id() << " - Done";
 }
+void Layer::apply_filament_modifier_regions()
+{
+    const PrintRegionConfig *reference_config = nullptr;
+    bool has_spatial_modifier = false;
+    for (const LayerRegion *layer_region : m_regions) {
+        if (layer_region->slices.empty())
+            continue;
+        if (reference_config == nullptr)
+            reference_config = &layer_region->region().config();
+        else if (!same_filament_modifier_config(*reference_config, layer_region->region().config())) {
+            has_spatial_modifier = true;
+            break;
+        }
+    }
+    if (!has_spatial_modifier)
+        return;
+
+    for (size_t region_id = 0; region_id < m_regions.size(); ++region_id) {
+        LayerRegion &layer_region = *m_regions[region_id];
+        set_filament_modifier_region(layer_region.perimeters, int(region_id));
+        set_filament_modifier_region(layer_region.fills, int(region_id));
+    }
+
+    for (size_t region_id = 0; region_id < m_regions.size(); ++region_id) {
+        const LayerRegion &spatial_region = *m_regions[region_id];
+        if (spatial_region.slices.empty())
+            continue;
+        const ExPolygons mask = to_expolygons(spatial_region.slices.surfaces);
+        for (LayerRegion *owner : m_regions) {
+            split_filament_modifier_region(owner->perimeters, mask, int(region_id));
+            split_filament_modifier_region(owner->fills, mask, int(region_id));
+        }
+    }
+}
+
 
 void Layer::export_region_slices_to_svg(const char *path) const
 {

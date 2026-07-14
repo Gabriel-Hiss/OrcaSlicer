@@ -209,6 +209,7 @@ bool ObjectSettings::update_settings_list()
     bool is_volume_settings = false;
     bool is_layer_range_settings = false;
     bool is_layer_root = false;
+    bool all_filament_modifiers = true;
     ModelObject * parent_object = nullptr;
     for (auto item : items) {
         auto type = objects_model->GetItemType(item);
@@ -246,6 +247,8 @@ bool ObjectSettings::update_settings_list()
             const int vol_idx = objects_model->GetVolumeIdByItem(item);
             assert(vol_idx >= 0);
             auto volume = object->volumes[vol_idx];
+            if (!volume->is_filament_modifier())
+                all_filament_modifiers = false;
             object_configs.emplace(volume, &volume->config);
         }
         else if(type == itLayer){
@@ -267,12 +270,14 @@ bool ObjectSettings::update_settings_list()
     auto tab_object = dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab());
     auto tab_volume = dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(true));
     auto tab_layer = dynamic_cast<TabPrintModel*>(wxGetApp().get_layer_tab());
+    auto tab_fmod = dynamic_cast<TabPrintModel*>(wxGetApp().get_filament_modifier_tab());
 
     if (is_plate_settings) {
         tab_plate->set_model_config(plate_configs);
         tab_object->set_model_config({});
         tab_volume->set_model_config({});
         tab_layer->set_model_config({});
+        tab_fmod->set_model_config({});
         ;// m_tab_active = tab_plate;
     }
     else if (is_object_settings) {
@@ -280,13 +285,23 @@ bool ObjectSettings::update_settings_list()
         tab_object->set_model_config(object_configs);
         tab_volume->set_model_config({});
         tab_layer->set_model_config({});
+        tab_fmod->set_model_config({});
         //m_tab_active = tab_object;
     }   
     else if (is_volume_settings) {
         tab_plate->set_model_config(plate_configs);
         tab_object->set_model_config({ {parent_object, &parent_object->config} });
-        tab_volume->set_model_config(object_configs);
         tab_layer->set_model_config({});
+        // Orca: when every selected volume is a filament modifier, route its config to the dedicated
+        // filament-modifier tab (Filament/Cooling pages); otherwise keep the regular per-part process tab.
+        if (all_filament_modifiers) {
+            tab_volume->set_model_config({});
+            tab_fmod->set_model_config(object_configs);
+        }
+        else {
+            tab_volume->set_model_config(object_configs);
+            tab_fmod->set_model_config({});
+        }
         //m_tab_active = tab_volume;
     }
     else if (is_layer_range_settings) {
@@ -294,6 +309,7 @@ bool ObjectSettings::update_settings_list()
         tab_object->set_model_config({ {parent_object, &parent_object->config} });
         tab_volume->set_model_config({});
         tab_layer->set_model_config(object_configs);
+        tab_fmod->set_model_config({});
         //m_tab_active = tab_layer;
     }    
     else {
@@ -301,6 +317,7 @@ bool ObjectSettings::update_settings_list()
         tab_object->set_model_config({});
         tab_volume->set_model_config({});
         tab_layer->set_model_config({});
+        tab_fmod->set_model_config({});
         //m_tab_active = nullptr;
     }
     ((ParamsPanel*) tab_object->GetParent())->set_active_tab(nullptr);

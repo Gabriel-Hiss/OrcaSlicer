@@ -1,5 +1,6 @@
 #include "ExtrusionEntity.hpp"
 #include "ExtrusionEntityCollection.hpp"
+#include "Algorithm/LineSplit.hpp"
 #include "ExPolygon.hpp"
 #include "ClipperUtils.hpp"
 #include "Extruder.hpp"
@@ -14,6 +15,149 @@
 namespace Slic3r {
     
 static const double slope_inner_outer_wall_gap = 0.4;
+namespace {
+
+Point3 filament_modifier_junction_point(const ExtrusionPath &path, const Algorithm::SplitLineJunction &junction)
+{
+    const Points3 &points = path.polyline.points;
+    if (junction.is_src())
+        return points[std::min(junction.get_src_index(), points.size() - 1)];
+
+    const size_t edge_idx = std::min(junction.get_src_index(), points.size() - 2);
+    const Point3 &a = points[edge_idx];
+    const Point3 &b = points[edge_idx + 1];
+    const double dx = double(b.x() - a.x());
+    const double dy = double(b.y() - a.y());
+    const double length_squared = dx * dx + dy * dy;
+    const double ratio = length_squared == 0.
+        ? 0.
+        : std::clamp((double(junction.p.x() - a.x()) * dx + double(junction.p.y() - a.y()) * dy) / length_squared, 0., 1.);
+    const coord_t z = coord_t(std::llround(lerp(double(a.z()), double(b.z()), ratio)));
+    return Point3(junction.p, z);
+}
+
+bool split_filament_modifier_path(
+    const ExtrusionPath &path,
+    const ExPolygons &mask,
+    int region_id,
+    ExtrusionPaths &fragments)
+{
+    const size_t fragments_before = fragments.size();
+    if (path.polyline.points.size() < 2 || path.length() == 0.)
+        return false;
+
+    const Algorithm::SplittedLine split = Algorithm::split_line(path.polyline.points, mask, false);
+    if (split.size() < 2)
+        return false;
+
+    Polyline3 polyline;
+    polyline.points.reserve(path.polyline.points.size());
+    polyline.points.push_back(filament_modifier_junction_point(path, split.front()));
+    int current_region_id = split.front().clipped ? region_id : path.filament_modifier_region_id();
+
+    const auto flush = [&]() {
+        if (polyline.points.size() < 2 ||
+            std::adjacent_find(polyline.points.begin(), polyline.points.end(),
+                [](const Point3 &lhs, const Point3 &rhs) { return lhs != rhs; }) == polyline.points.end())
+            return;
+
+        fragments.emplace_back(std::move(polyline), path);
+        fragments.back().set_filament_modifier_region_id(current_region_id);
+        if (!path.can_reverse())
+            fragments.back().set_reverse();
+    };
+
+    for (size_t i = 0; i + 1 < split.size(); ++i) {
+        const Point3 from = filament_modifier_junction_point(path, split[i]);
+        const Point3 to   = filament_modifier_junction_point(path, split[i + 1]);
+        if (from == to)
+            continue;
+
+        const int segment_region_id = split[i].clipped ? region_id : path.filament_modifier_region_id();
+        if (segment_region_id != current_region_id) {
+            flush();
+            polyline = Polyline3();
+            polyline.points.push_back(from);
+            current_region_id = segment_region_id;
+        } else if (polyline.points.empty()) {
+            polyline.points.push_back(from);
+        }
+        if (polyline.points.back() != to)
+            polyline.points.push_back(to);
+    }
+    flush();
+    return fragments.size() != fragments_before;
+}
+
+void set_filament_modifier_region(ExtrusionEntity &entity, int region_id)
+{
+    if (auto *collection = dynamic_cast<ExtrusionEntityCollection *>(&entity)) {
+        for (ExtrusionEntity *child : collection->entities)
+            set_filament_modifier_region(*child, region_id);
+    } else if (auto *loop = dynamic_cast<ExtrusionLoop *>(&entity)) {
+        for (ExtrusionPath &path : loop->paths)
+            path.set_filament_modifier_region_id(region_id);
+    } else if (auto *multipath = dynamic_cast<ExtrusionMultiPath *>(&entity)) {
+        for (ExtrusionPath &path : multipath->paths)
+            path.set_filament_modifier_region_id(region_id);
+    } else if (auto *path = dynamic_cast<ExtrusionPath *>(&entity)) {
+        path->set_filament_modifier_region_id(region_id);
+    }
+}
+
+void split_filament_modifier_paths(ExtrusionPaths &paths, const ExPolygons &mask, int region_id)
+{
+    ExtrusionPaths split_paths;
+    split_paths.reserve(paths.size());
+    for (ExtrusionPath &path : paths) {
+        if (!split_filament_modifier_path(path, mask, region_id, split_paths))
+            split_paths.emplace_back(std::move(path));
+    }
+    paths = std::move(split_paths);
+}
+
+void split_filament_modifier_entity(ExtrusionEntity *&entity, const ExPolygons &mask, int region_id)
+{
+    if (auto *collection = dynamic_cast<ExtrusionEntityCollection *>(entity)) {
+        for (ExtrusionEntity *&child : collection->entities)
+            split_filament_modifier_entity(child, mask, region_id);
+    } else if (auto *loop = dynamic_cast<ExtrusionLoop *>(entity)) {
+        split_filament_modifier_paths(loop->paths, mask, region_id);
+    } else if (auto *multipath = dynamic_cast<ExtrusionMultiPath *>(entity)) {
+        split_filament_modifier_paths(multipath->paths, mask, region_id);
+    } else if (auto *path = dynamic_cast<ExtrusionPath *>(entity)) {
+        ExtrusionPaths fragments;
+        if (!split_filament_modifier_path(*path, mask, region_id, fragments))
+            return;
+
+        if (fragments.size() == 1) {
+            *path = std::move(fragments.front());
+        } else {
+            auto *multipath = new ExtrusionMultiPath(std::move(fragments));
+            multipath->inset_idx = path->inset_idx;
+            if (!path->can_reverse())
+                multipath->set_reverse();
+            delete path;
+            entity = multipath;
+        }
+    }
+}
+
+} // namespace
+
+void set_filament_modifier_region(ExtrusionEntityCollection &collection, int region_id)
+{
+    set_filament_modifier_region(static_cast<ExtrusionEntity &>(collection), region_id);
+}
+
+void split_filament_modifier_region(ExtrusionEntityCollection &collection, const ExPolygons &mask, int region_id)
+{
+    if (mask.empty())
+        return;
+    for (ExtrusionEntity *&entity : collection.entities)
+        split_filament_modifier_entity(entity, mask, region_id);
+}
+
 
 void ExtrusionPath::intersect_expolygons(const ExPolygons &collection, ExtrusionEntityCollection* retval) const
 {
@@ -284,9 +428,8 @@ void ExtrusionLoop::split_at(const Point &point, bool prefer_non_overhang, const
     
     // now split path_idx in two parts
     const ExtrusionPath &path = this->paths[path_idx];
-    ExtrusionPath p1(path.role(), path.mm3_per_mm, path.width, path.height);
-    ExtrusionPath p2(path.role(), path.mm3_per_mm, path.width, path.height);
-    p1.z_contoured = p2.z_contoured = path.z_contoured;
+    ExtrusionPath p1(Polyline3(), path);
+    ExtrusionPath p2(Polyline3(), path);
     path.polyline.split_at(p, &p1.polyline, &p2.polyline);
 
     if (this->paths.size() == 1) {

@@ -315,6 +315,7 @@ std::map<std::string, std::string> SettingsFactory::CATEGORY_ICON =
     { L("Bed adhesion")         , "blank_14"    },
 //  { L("Speed > Acceleration") , "time"        },
     { L("Advanced")             , "blank_14"    },
+    { L("Filament Modifier")    , "blank_14"    },
     // BBS: remove SLA categories
 };
 
@@ -540,36 +541,36 @@ void MenuFactory::append_menu_item_delete(wxMenu* menu)
 #endif
 }
 
-wxMenu* MenuFactory::append_submenu_add_generic(wxMenu* menu, ModelVolumeType type) {
+wxMenu* MenuFactory::append_submenu_add_generic(wxMenu* menu, ModelVolumeType type, bool filament_modifier) {
     auto sub_menu = new wxMenu;
 
     if (type != ModelVolumeType::INVALID) {
         append_menu_item(sub_menu, wxID_ANY, _L("Load..."), "",
-            [type](wxCommandEvent&) { obj_list()->load_subobject(type); }, "menu_load", menu);
+            [type, filament_modifier](wxCommandEvent&) { obj_list()->load_subobject(type, false, filament_modifier); }, "menu_load", menu);
         sub_menu->AppendSeparator();
     }
 
     append_menu_item(sub_menu, wxID_ANY, _L("Cube"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cube") ,type); },"menu_obj_cube", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cube") ,type, filament_modifier); },"menu_obj_cube", menu);
 
     append_menu_item(sub_menu, wxID_ANY, _L("Cylinder"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cylinder"), type); },"menu_obj_cylinder", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cylinder"), type, filament_modifier); },"menu_obj_cylinder", menu);
 
     append_menu_item(sub_menu, wxID_ANY, _L("Sphere"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Sphere"), type); },"menu_obj_sphere", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Sphere"), type, filament_modifier); },"menu_obj_sphere", menu);
 
     append_menu_item(sub_menu, wxID_ANY, _L("Cone"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cone"), type); },"menu_obj_cone", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Cone"), type, filament_modifier); },"menu_obj_cone", menu);
 
     append_menu_item(sub_menu, wxID_ANY, _L("Disc"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Disc"), type); },"menu_obj_disc", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Disc"), type, filament_modifier); },"menu_obj_disc", menu);
 
     append_menu_item(sub_menu, wxID_ANY, _L("Torus"), "",
-        [type](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Torus"), type); },"menu_obj_torus", menu);
+        [type, filament_modifier](wxCommandEvent&) { obj_list()->load_generic_subobject(L("Torus"), type, filament_modifier); },"menu_obj_torus", menu);
 
 
-    append_menu_item_add_text(sub_menu, type);
-    append_menu_item_add_svg(sub_menu, type);
+    append_menu_item_add_text(sub_menu, type, true, filament_modifier);
+    append_menu_item_add_svg(sub_menu, type, true, filament_modifier);
 
     return sub_menu;
 }
@@ -649,8 +650,8 @@ wxMenu* MenuFactory::append_submenu_add_handy_model(wxMenu* menu, ModelVolumeTyp
 
     return sub_menu;
 }
-static void append_menu_itemm_add_(const wxString& name, GLGizmosManager::EType gizmo_type, wxMenu *menu, ModelVolumeType type, bool is_submenu_item) {
-    auto add_ = [type, gizmo_type](const wxCommandEvent & /*unnamed*/) {
+static void append_menu_itemm_add_(const wxString& name, GLGizmosManager::EType gizmo_type, wxMenu *menu, ModelVolumeType type, bool is_submenu_item, bool filament_modifier = false) {
+    auto add_ = [type, gizmo_type, filament_modifier](const wxCommandEvent & /*unnamed*/) {
         const GLCanvas3D *canvas = plater()->canvas3D();
         const GLGizmosManager &mng = canvas->get_gizmos_manager();
         GLGizmoBase *gizmo_base = mng.get_gizmo(gizmo_type);
@@ -666,18 +667,18 @@ static void append_menu_itemm_add_(const wxString& name, GLGizmosManager::EType 
             assert(emboss != nullptr);
             if (emboss == nullptr) return;
             if (screen_position.has_value()) {
-                emboss->create_volume(volume_type, *screen_position);
+                emboss->create_volume(volume_type, *screen_position, filament_modifier);
             } else {
-                emboss->create_volume(volume_type);
+                emboss->create_volume(volume_type, filament_modifier);
             }
         } else if (gizmo_type == GLGizmosManager::Svg) {
             auto svg = dynamic_cast<GLGizmoSVG *>(gizmo_base);
             assert(svg != nullptr);
             if (svg == nullptr) return;
             if (screen_position.has_value()) {
-                svg->create_volume(volume_type, *screen_position);
+                svg->create_volume(volume_type, *screen_position, filament_modifier);
             } else {
-                svg->create_volume(volume_type);
+                svg->create_volume(volume_type, filament_modifier);
             }
         }
     };
@@ -693,12 +694,12 @@ static void append_menu_itemm_add_(const wxString& name, GLGizmosManager::EType 
     }
 }
 
-void MenuFactory::append_menu_item_add_text(wxMenu* menu, ModelVolumeType type, bool is_submenu_item/* = true*/){
-    append_menu_itemm_add_(_L("Text"), GLGizmosManager::Emboss, menu, type, is_submenu_item);
+void MenuFactory::append_menu_item_add_text(wxMenu* menu, ModelVolumeType type, bool is_submenu_item/* = true*/, bool filament_modifier/* = false*/){
+    append_menu_itemm_add_(_L("Text"), GLGizmosManager::Emboss, menu, type, is_submenu_item, filament_modifier);
 }
 
-void MenuFactory::append_menu_item_add_svg(wxMenu *menu, ModelVolumeType type, bool is_submenu_item /* = true*/){
-    append_menu_itemm_add_(_L("SVG"), GLGizmosManager::Svg, menu, type, is_submenu_item);
+void MenuFactory::append_menu_item_add_svg(wxMenu *menu, ModelVolumeType type, bool is_submenu_item /* = true*/, bool filament_modifier/* = false*/){
+    append_menu_itemm_add_(_L("SVG"), GLGizmosManager::Svg, menu, type, is_submenu_item, filament_modifier);
 }
 
 void MenuFactory::append_menu_items_add_volume(wxMenu* menu)
@@ -715,6 +716,11 @@ void MenuFactory::append_menu_items_add_volume(wxMenu* menu)
             menu->Destroy(item_id);
     }
 
+    // Orca: the "Add Filament Modifier" submenu is not part of ADD_VOLUME_MENU_ITEMS, so remove it explicitly to avoid duplicates on menu rebuilds
+    int fmod_item_id = menu->FindItem(_L("Add Filament Modifier"));
+    if (fmod_item_id != wxNOT_FOUND)
+        menu->Destroy(fmod_item_id);
+
     for (size_t type = 0; type < ADD_VOLUME_MENU_ITEMS.size(); type++)
     {
         auto& item = ADD_VOLUME_MENU_ITEMS[type];
@@ -722,6 +728,13 @@ void MenuFactory::append_menu_items_add_volume(wxMenu* menu)
         wxMenu* sub_menu = append_submenu_add_generic(menu, ModelVolumeType(type));
         append_submenu(menu, sub_menu, wxID_ANY, _(item.first), "", item.second,
             []() { return obj_list()->is_instance_or_object_selected(); }, m_parent);
+
+        // Orca: right after the "Add Modifier" entry, append a sibling submenu that creates filament modifiers
+        if (type == static_cast<size_t>(ModelVolumeType::PARAMETER_MODIFIER)) {
+            wxMenu* fmod_sub_menu = append_submenu_add_generic(menu, ModelVolumeType::PARAMETER_MODIFIER, /*filament_modifier=*/true);
+            append_submenu(menu, fmod_sub_menu, wxID_ANY, _L("Add Filament Modifier"), "", "menu_add_modifier",
+                []() { return obj_list()->is_instance_or_object_selected(); }, m_parent);
+        }
     }
 
     append_menu_item_layers_editing(menu);

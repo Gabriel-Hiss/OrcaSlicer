@@ -163,11 +163,16 @@ void OptionsGroup::remove_option_if(std::function<bool(std::string const &)> con
         opts.erase(std::remove_if(opts.begin(), opts.end(), [&comp](Option &o) { return comp(o.opt.opt_key); }), opts.end());
         l.undo_to_sys = true;
     }
-    for (int i = m_lines.size() - 1; i >= 0; --i) {
-        if (m_lines[i].get_options().empty())
-            m_options_mode.erase(m_options_mode.begin() + i);
-    }
     m_lines.erase(std::remove_if(m_lines.begin(), m_lines.end(), [](auto &l) { return l.get_options().empty(); }), m_lines.end());
+
+    m_options_mode.clear();
+    for (const auto &line : m_lines) {
+        if (line.full_width && (line.widget != nullptr || !line.get_extra_widgets().empty()))
+            continue;
+        const auto &options = line.get_options();
+        if (!options.empty())
+            m_options_mode.push_back(options.front().opt.mode);
+    }
     // TODO: remove items from g->m_options;
 }
 

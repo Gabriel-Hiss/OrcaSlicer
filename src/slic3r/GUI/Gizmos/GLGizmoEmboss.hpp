@@ -39,13 +39,13 @@ public:
     /// </summary>
     /// <param name="volume_type">Object part / Negative volume / Modifier</param>
     /// <param name="mouse_pos">Define position of new volume</param>
-    bool create_volume(ModelVolumeType volume_type, const Vec2d &mouse_pos);
+    bool create_volume(ModelVolumeType volume_type, const Vec2d &mouse_pos, bool filament_modifier = false);
 
     /// <summary>
     /// Create new text without given position
     /// </summary>
     /// <param name="volume_type">Object part / Negative volume / Modifier</param>
-    bool create_volume(ModelVolumeType volume_type);
+    bool create_volume(ModelVolumeType volume_type, bool filament_modifier = false);
 
     /// <summary>
     /// Handle pressing of shortcut

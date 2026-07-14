@@ -323,7 +323,7 @@ GLGizmoEmboss::GLGizmoEmboss(GLCanvas3D &parent, const std::string &icon_filenam
     // paste HEX unicode into notepad move cursor after unicode press [alt] + [x]
 }
 
-bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type, const Vec2d& mouse_pos)
+bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type, const Vec2d& mouse_pos, bool filament_modifier)
 {
     if (!init_create(volume_type))
         return false;
@@ -331,11 +331,12 @@ bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type, const Vec2d& mous
     // NOTE: change style manager - be carefull with order changes
     DataBasePtr base = create_emboss_data_base(m_text, m_style_manager, m_text_lines, m_parent.get_selection(), volume_type, m_job_cancel);
     CreateVolumeParams input = create_input(m_parent, m_style_manager.get_style(), m_raycast_manager, volume_type);
+    input.filament_modifier = filament_modifier;
     return start_create_volume(input, std::move(base), mouse_pos);
 }
 
 // Designed for create volume without information of mouse in scene
-bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type)
+bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type, bool filament_modifier)
 {
     if (!init_create(volume_type))
         return false;
@@ -343,6 +344,7 @@ bool GLGizmoEmboss::create_volume(ModelVolumeType volume_type)
     // NOTE: change style manager - be carefull with order changes
     DataBasePtr base = create_emboss_data_base(m_text, m_style_manager, m_text_lines, m_parent.get_selection(), volume_type, m_job_cancel);
     CreateVolumeParams input = create_input(m_parent, m_style_manager.get_style(), m_raycast_manager, volume_type);
+    input.filament_modifier = filament_modifier;
     return start_create_volume_without_position(input, std::move(base));
 }
 

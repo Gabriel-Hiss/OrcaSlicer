@@ -10,7 +10,7 @@
 #include <sstream>
 #include <regex>
 #include <memory>
-#include <map>
+#include <unordered_map>
 #include <vector>
 #include "AdaptivePAInterpolator.hpp"
 
@@ -47,12 +47,13 @@ public:
     std::string process_layer(std::string &&gcode);
     
     /**
-     * @brief Manually sets adaptive PA internal value.
+     * @brief Manually sets the adaptive PA state for one tool.
      *
-     * This method manually sets the adaptive PA internally held value.
-     * Call this when changing tools or in any other case where the internally assumed last PA value may be incorrect
+     * Call this when a tool's PA is emitted outside the layer processor.
+     * @param tool Tool whose state changed.
+     * @param PA Effective pressure advance value.
      */
-    void resetPreviousPA(double PA){ m_last_predicted_pa = PA; };
+    void resetPreviousPA(unsigned int tool, double PA) { m_last_predicted_pa[tool] = PA; }
     
     /**
      * @brief Validates an adaptive pressure advance model string.
@@ -72,7 +73,7 @@ private:
     GCode &m_gcodegen; ///< Reference to the GCode object.
     std::unordered_map<unsigned int, std::unique_ptr<AdaptivePAInterpolator>> m_AdaptivePAInterpolators; ///< Map between Interpolator objects and tool ID's
     const PrintConfig &m_config; ///< Reference to the print configuration.
-    double m_last_predicted_pa; ///< Last predicted pressure advance value.
+    std::unordered_map<unsigned int, double> m_last_predicted_pa; ///< Last predicted pressure advance value per tool.
     double m_max_next_feedrate; ///< Maximum feed rate (speed) for the upcomming island. If no speed is found, the previous island speed is used.
     double m_next_feedrate; ///< First feed rate (speed) for the upcomming island.
     double m_current_feedrate; ///< Current, latest feedrate.

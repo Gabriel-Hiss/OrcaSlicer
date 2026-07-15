@@ -379,6 +379,7 @@ private:
     ExtrusionRole m_role;
     //BBS
     bool m_no_extrusion = false;
+    // Global PrintRegion::print_region_id(), or -1 when no spatial modifier applies.
     int m_filament_modifier_region_id = -1;
 };
 

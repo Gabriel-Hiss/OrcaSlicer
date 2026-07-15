@@ -307,20 +307,21 @@ void Layer::apply_filament_modifier_regions()
     if (!has_spatial_modifier)
         return;
 
-    for (size_t region_id = 0; region_id < m_regions.size(); ++region_id) {
-        LayerRegion &layer_region = *m_regions[region_id];
-        set_filament_modifier_region(layer_region.perimeters, int(region_id));
-        set_filament_modifier_region(layer_region.fills, int(region_id));
+    for (LayerRegion *layer_region : m_regions) {
+        const int print_region_id = layer_region->region().print_region_id();
+        set_filament_modifier_region(layer_region->perimeters, print_region_id);
+        set_filament_modifier_region(layer_region->fills, print_region_id);
     }
 
-    for (size_t region_id = 0; region_id < m_regions.size(); ++region_id) {
-        const LayerRegion &spatial_region = *m_regions[region_id];
-        if (spatial_region.slices.empty())
+    for (const LayerRegion *spatial_region : m_regions) {
+        if (spatial_region->slices.empty() ||
+            same_filament_modifier_config(*reference_config, spatial_region->region().config()))
             continue;
-        const ExPolygons mask = to_expolygons(spatial_region.slices.surfaces);
+        const ExPolygons mask = to_expolygons(spatial_region->slices.surfaces);
+        const int print_region_id = spatial_region->region().print_region_id();
         for (LayerRegion *owner : m_regions) {
-            split_filament_modifier_region(owner->perimeters, mask, int(region_id));
-            split_filament_modifier_region(owner->fills, mask, int(region_id));
+            split_filament_modifier_region(owner->perimeters, mask, print_region_id);
+            split_filament_modifier_region(owner->fills, mask, print_region_id);
         }
     }
 }

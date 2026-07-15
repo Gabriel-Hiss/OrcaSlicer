@@ -627,10 +627,23 @@ private:
         int    fan_speed {};
         int    aux_fan_speed {};
     };
+    struct FilamentModifierScope {
+        const PrintRegionConfig *config {nullptr};
+        int    tool {-1};
+        int    pressure_advance_tool {-1};
+        int    temperature {-1};
+        int    restore_temperature {-1};
+        double pressure_advance {-1.};
+        double restore_pressure_advance {-1.};
+    };
     FilamentModifierConfig              m_fmod_base_config;
     bool                                m_fmod_base_config_valid { false };
     int                                 m_fmod_active_temp { 0 };
     double                              m_fmod_active_pa { -1. };
+    std::vector<int>                    m_fmod_role_temperatures;
+    std::vector<double>                 m_fmod_role_pressure_advances;
+    int                                 m_fmod_role_main_fan { -1 };
+    int                                 m_fmod_role_aux_fan { -1 };
 
     std::unique_ptr<CoolingBuffer>      m_cooling_buffer;
     std::unique_ptr<SpiralVase>         m_spiral_vase;
@@ -686,7 +699,8 @@ private:
 
     double      calc_max_volumetric_speed(const double layer_height, const double line_width, const std::string co_str);
     std::string _extrude_with_filament_modifier(const ExtrusionPath &path, std::string description = "", double speed = -1);
-    std::string _extrude(const ExtrusionPath &path, std::string description = "", double speed = -1);
+    std::string _extrude(const ExtrusionPath &path, std::string description = "", double speed = -1,
+                         const FilamentModifierScope *filament_modifier_scope = nullptr);
     bool _needSAFC(const ExtrusionPath &path);
     void print_machine_envelope(GCodeOutputStream& file, Print& print);
     void _print_first_layer_bed_temperature(GCodeOutputStream &file, Print &print, const std::string &gcode, unsigned int first_printing_extruder_id, bool wait);

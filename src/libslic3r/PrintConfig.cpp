@@ -211,6 +211,14 @@ static t_config_enum_values s_keys_map_WaveOverhangPattern {
 };
 CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(WaveOverhangPattern)
 
+static t_config_enum_values s_keys_map_FilamentModifierScope {
+    { "model",                  int(FilamentModifierScope::Model) },
+    { "model_support",          int(FilamentModifierScope::ModelSupport) },
+    { "model_support_adhesion", int(FilamentModifierScope::ModelSupportAdhesion) }
+};
+CONFIG_OPTION_ENUM_DEFINE_STATIC_MAPS(FilamentModifierScope)
+
+
 static t_config_enum_values s_keys_map_FuzzySkinType {
     { "none",           int(FuzzySkinType::None) },
     { "external",       int(FuzzySkinType::External) },
@@ -5251,6 +5259,20 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->max = 350;
     def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("filament_modifier_scope", coEnum);
+    def->label = L("Scope");
+    def->category = L("Filament Modifier");
+    def->tooltip = L("Choose which print features are affected by this filament modifier.");
+    def->enum_keys_map = &ConfigOptionEnum<FilamentModifierScope>::get_enum_values();
+    def->enum_values.push_back("model");
+    def->enum_values.push_back("model_support");
+    def->enum_values.push_back("model_support_adhesion");
+    def->enum_labels.push_back(L("Model only"));
+    def->enum_labels.push_back(L("Model + supports"));
+    def->enum_labels.push_back(L("Model + supports + bed adhesion"));
+    def->mode = comSimple;
+    def->set_default_value(new ConfigOptionEnum<FilamentModifierScope>(FilamentModifierScope::Model));
 
     def = this->add("modifier_nozzle_temperature", coInt);
     def->label = L("Nozzle temperature");

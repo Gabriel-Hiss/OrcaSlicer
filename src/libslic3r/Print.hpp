@@ -514,6 +514,12 @@ private:
     std::vector<std::set<int>> detect_extruder_geometric_unprintables() const;
 
     void slice_volumes();
+    using FilamentModifierMasks = std::vector<std::pair<int, ExPolygons>>;
+    std::vector<FilamentModifierMasks> filament_modifier_masks(
+        const std::vector<float> &zs,
+        const std::vector<VolumeSlices> &volume_slices,
+        FilamentModifierScope minimum_scope) const;
+    void apply_filament_modifier_regions_to_support();
     //BBS
     ExPolygons _shrink_contour_holes(double contour_delta, double hole_delta, const ExPolygons& polys) const;
     // BBS
@@ -1154,6 +1160,7 @@ private:
     bool                invalidate_state_by_config_options(const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys);
 
     void                _make_skirt();
+    void                apply_filament_modifier_regions_to_adhesion();
     void                _make_wipe_tower();
     void                finalize_first_layer_convex_hull();
 

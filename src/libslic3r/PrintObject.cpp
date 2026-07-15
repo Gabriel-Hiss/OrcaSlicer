@@ -1437,8 +1437,10 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "modifier_max_volumetric_speed"
             || opt_key == "modifier_pressure_advance"
             || opt_key == "modifier_fan_speed"
-            || opt_key == "modifier_aux_fan_speed") {
+            || opt_key == "modifier_aux_fan_speed"
+            || opt_key == "filament_modifier_scope") {
             steps.emplace_back(posPerimeters);
+            steps.emplace_back(posSupportMaterial);
         } else if (
                opt_key == "seam_position"
             || opt_key == "seam_slope_type"

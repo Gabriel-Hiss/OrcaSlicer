@@ -587,6 +587,160 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
         return temp_set_by_gcode;
     }
 
+    static bool gcode_parameter(const char *begin, const char *end, char key, double &value)
+    {
+        bool found = false;
+        for (const char *ptr = begin; ptr < end;) {
+            while (ptr < end && (*ptr == ' ' || *ptr == '\t'))
+                ++ptr;
+            if (ptr == end)
+                break;
+            const char parameter = *ptr++;
+            while (ptr < end && (*ptr == ' ' || *ptr == '\t'))
+                ++ptr;
+            char *value_end = nullptr;
+            const double parsed = std::strtod(ptr, &value_end);
+            if (value_end != ptr) {
+                if (parameter == key) {
+                    value = parsed;
+                    found = true;
+                }
+                ptr = value_end;
+            } else {
+                while (ptr < end && *ptr != ' ' && *ptr != '\t')
+                    ++ptr;
+            }
+        }
+        return found;
+    }
+
+    static bool custom_gcode_sets_temperature_for_tool(const std::string &gcode, GCodeFlavor flavor,
+                                                       int tool, int &temperature)
+    {
+        bool found = false;
+        std::istringstream stream(gcode);
+        std::string line;
+        while (std::getline(stream, line)) {
+            const char *begin = line.c_str();
+            while (*begin == ' ' || *begin == '\t')
+                ++begin;
+            const char *params = begin;
+            while (*params != '\0' && *params != ' ' && *params != '\t' && *params != ';')
+                ++params;
+            const std::string command(begin, params);
+            const bool reprap = flavor == gcfRepRapFirmware;
+            if (command != "M104" && command != "M109" && !(reprap && command == "G10"))
+                continue;
+
+            const char *end = strchr(params, ';');
+            if (end == nullptr)
+                end = params + strlen(params);
+            double parsed_temperature = -1.;
+            double parsed_tool = -1.;
+            const char temperature_parameter = flavor == gcfMach3 || flavor == gcfMachinekit ? 'P' : 'S';
+            const char tool_parameter = reprap && command == "G10" ? 'P' : 'T';
+            if (gcode_parameter(params, end, temperature_parameter, parsed_temperature) &&
+                (!gcode_parameter(params, end, tool_parameter, parsed_tool) || int(parsed_tool) == tool) &&
+                parsed_temperature >= 0. && parsed_temperature < 1000.) {
+                temperature = int(parsed_temperature);
+                found = true;
+            }
+        }
+        return found;
+    }
+
+    static bool custom_gcode_sets_pressure_advance(const std::string &gcode, double &pressure_advance)
+    {
+        bool found = false;
+        std::istringstream stream(gcode);
+        std::string line;
+        while (std::getline(stream, line)) {
+            const char *begin = line.c_str();
+            while (*begin == ' ' || *begin == '\t')
+                ++begin;
+            const char *params = begin;
+            while (*params != '\0' && *params != ' ' && *params != '\t' && *params != ';')
+                ++params;
+            const std::string command(begin, params);
+            const char *end = strchr(params, ';');
+            if (end == nullptr)
+                end = params + strlen(params);
+
+            double parsed = -1.;
+            bool parsed_value = false;
+            if (command == "M900")
+                parsed_value = gcode_parameter(params, end, 'K', parsed);
+            else if (command == "M572")
+                parsed_value = gcode_parameter(params, end, 'S', parsed);
+            else if (command == "M233")
+                parsed_value = gcode_parameter(params, end, 'Y', parsed) ||
+                               gcode_parameter(params, end, 'X', parsed);
+            else if (command == "SET_PRESSURE_ADVANCE") {
+                const char key[] = "ADVANCE=";
+                const char *value = std::search(params, end, std::begin(key), std::end(key) - 1);
+                if (value != end) {
+                    value += sizeof(key) - 1;
+                    char *value_end = nullptr;
+                    parsed = std::strtod(value, &value_end);
+                    parsed_value = value_end != value;
+                }
+            }
+            if (parsed_value && std::isfinite(parsed) && parsed >= 0.) {
+                pressure_advance = parsed;
+                found = true;
+            }
+        }
+        return found;
+    }
+
+    static void custom_gcode_sets_fans(const std::string &gcode, GCodeFlavor flavor,
+                                       int &main_fan, int &aux_fan)
+    {
+        std::istringstream stream(gcode);
+        std::string line;
+        while (std::getline(stream, line)) {
+            const char *begin = line.c_str();
+            while (*begin == ' ' || *begin == '\t')
+                ++begin;
+            const char *params = begin;
+            while (*params != '\0' && *params != ' ' && *params != '\t' && *params != ';')
+                ++params;
+            const std::string command(begin, params);
+            const char *end = strchr(params, ';');
+            if (end == nullptr)
+                end = params + strlen(params);
+
+            if (command == "M126") {
+                main_fan = 100;
+                continue;
+            }
+            if (command == "M127") {
+                main_fan = 0;
+                continue;
+            }
+            if (command != "M106" && command != "M107")
+                continue;
+
+            double fan_index = 0.;
+            const bool has_fan_index = gcode_parameter(params, end, 'P', fan_index);
+            const bool mach = flavor == gcfMach3 || flavor == gcfMachinekit;
+            if (command == "M107") {
+                (has_fan_index && int(fan_index) == 2 ? aux_fan : main_fan) = 0;
+                continue;
+            }
+
+            double pwm = 255.;
+            const bool has_pwm = gcode_parameter(params, end, mach ? 'P' : 'S', pwm);
+            if (!has_pwm && mach)
+                continue;
+            const int percent = std::clamp(int(std::lround(pwm * 100. / 255.)), 0, 100);
+            if (!mach && has_fan_index && int(fan_index) == 2)
+                aux_fan = percent;
+            else if (mach || !has_fan_index || int(fan_index) == 0)
+                main_fan = percent;
+        }
+    }
+
     // BBS
     // start_pos refers to the last position before the wipe_tower.
     // end_pos refers to the wipe tower's start_pos.
@@ -1090,7 +1244,7 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             gcode += gcodegen.writer().set_pressure_advance(gcodegen.config().pressure_advance.get_at(new_filament_id));
             // Orca: Adaptive PA
             // Reset Adaptive PA processor last PA value
-            gcodegen.m_pa_processor->resetPreviousPA(gcodegen.config().pressure_advance.get_at(new_filament_id));
+            gcodegen.m_pa_processor->resetPreviousPA(new_filament_id, gcodegen.config().pressure_advance.get_at(new_filament_id));
         }
         gcodegen.m_fmod_active_temp = 0;
         gcodegen.m_fmod_active_pa = -1.;
@@ -1373,7 +1527,7 @@ static std::vector<Vec2d> get_path_of_change_filament(const Print& print)
             gcode += gcodegen.writer().set_pressure_advance(gcodegen.config().pressure_advance.get_at(new_extruder_id));
             // Orca: Adaptive PA
             // Reset Adaptive PA processor last PA value
-            gcodegen.m_pa_processor->resetPreviousPA(gcodegen.config().pressure_advance.get_at(new_extruder_id));
+            gcodegen.m_pa_processor->resetPreviousPA(new_extruder_id, gcodegen.config().pressure_advance.get_at(new_extruder_id));
         }
         gcodegen.m_fmod_active_temp = 0;
         gcodegen.m_fmod_active_pa = -1.;
@@ -3259,7 +3413,7 @@ void GCode::_do_export(Print& print, GCodeOutputStream &file, ThumbnailsGenerato
             file.write(m_writer.set_pressure_advance(m_config.pressure_advance.get_at(initial_non_support_extruder_id)));
             // Orca: Adaptive PA
             // Reset Adaptive PA processor last PA value
-            m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(initial_non_support_extruder_id));
+            m_pa_processor->resetPreviousPA(initial_non_support_extruder_id, m_config.pressure_advance.get_at(initial_non_support_extruder_id));
         }
     }
 
@@ -3855,9 +4009,9 @@ void GCode::process_layers(
 
     // The pipeline elements are joined using const references, thus no copying is performed.
     if (m_spiral_vase && m_pressure_equalizer)
-        tbb::parallel_pipeline(12, generator & spiral_mode & pressure_equalizer & cooling & fan_mover & output);
+        tbb::parallel_pipeline(12, generator & spiral_mode & pressure_equalizer & cooling & fan_mover & pa_processor_filter & output);
     else if (m_spiral_vase)
-    	tbb::parallel_pipeline(12, generator & spiral_mode & cooling & fan_mover & output);
+        tbb::parallel_pipeline(12, generator & spiral_mode & cooling & fan_mover & pa_processor_filter & output);
     else if	(m_pressure_equalizer)
         tbb::parallel_pipeline(12, generator & pressure_equalizer & cooling & fan_mover & pa_processor_filter & output);
     else
@@ -3953,9 +4107,9 @@ void GCode::process_layers(
 
     // The pipeline elements are joined using const references, thus no copying is performed.
     if (m_spiral_vase && m_pressure_equalizer)
-        tbb::parallel_pipeline(12, generator & spiral_mode & pressure_equalizer & cooling & fan_mover & output);
+        tbb::parallel_pipeline(12, generator & spiral_mode & pressure_equalizer & cooling & fan_mover & pa_processor_filter & output);
     else if (m_spiral_vase)
-    	tbb::parallel_pipeline(12, generator & spiral_mode & cooling & fan_mover & output);
+        tbb::parallel_pipeline(12, generator & spiral_mode & cooling & fan_mover & pa_processor_filter & output);
     else if	(m_pressure_equalizer)
         tbb::parallel_pipeline(12, generator & pressure_equalizer & cooling & fan_mover & pa_processor_filter & output);
     else
@@ -6330,15 +6484,15 @@ std::string GCode::filament_modifier_transition()
 
     if (p_ov >= 0. && p_ov != m_fmod_active_pa) {
         gcode += m_writer.set_pressure_advance(p_ov);
-        char buf[64];
-        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %g\n", p_ov);
+        char buf[72];
+        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %d %g\n", filament_id, p_ov);
         gcode += buf;
         m_fmod_active_pa = p_ov;
     } else if (p_ov < 0. && m_fmod_active_pa >= 0.) {
         const double base = m_config.enable_pressure_advance.get_at(filament_id) ? m_config.pressure_advance.get_at(filament_id) : 0.;
         gcode += m_writer.set_pressure_advance(base);
-        char buf[64];
-        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %g\n", base);
+        char buf[72];
+        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_PA %d %g\n", filament_id, base);
         gcode += buf;
         m_fmod_active_pa = -1.;
     }
@@ -6362,35 +6516,43 @@ std::string GCode::filament_modifier_reset()
 std::string GCode::_extrude_with_filament_modifier(const ExtrusionPath &path, std::string description, double speed)
 {
     const int region_id = path.filament_modifier_region_id();
-    if (region_id < 0 || m_layer == nullptr || size_t(region_id) >= m_layer->region_count())
+    if (region_id < 0 || m_print == nullptr || size_t(region_id) >= m_print->num_print_regions())
         return _extrude(path, std::move(description), speed);
 
-    const FilamentModifierConfig previous {
-        m_config.modifier_nozzle_temperature.value,
-        m_config.modifier_max_volumetric_speed.value,
-        m_config.modifier_pressure_advance.value,
-        m_config.print_flow_ratio.value,
-        m_config.modifier_fan_speed.value,
-        m_config.modifier_aux_fan_speed.value
-    };
-    const PrintRegionConfig &spatial_config = m_layer->get_region(region_id)->region().config();
-    m_config.modifier_nozzle_temperature.value   = spatial_config.modifier_nozzle_temperature.value;
-    m_config.modifier_max_volumetric_speed.value = spatial_config.modifier_max_volumetric_speed.value;
-    m_config.modifier_pressure_advance.value     = spatial_config.modifier_pressure_advance.value;
-    m_config.print_flow_ratio.value               = spatial_config.print_flow_ratio.value;
-    m_config.modifier_fan_speed.value             = spatial_config.modifier_fan_speed.value;
-    m_config.modifier_aux_fan_speed.value         = spatial_config.modifier_aux_fan_speed.value;
+    const int filament_id = m_writer.filament() == nullptr ? -1 : m_writer.filament()->id();
+    const int tool = filament_id < 0 ? -1 : int(get_extruder_id(filament_id));
+    const int role_temperature = tool >= 0 && size_t(tool) < m_fmod_role_temperatures.size()
+        ? m_fmod_role_temperatures[tool] : -1;
+    const int effective_temp = role_temperature >= 0 ? role_temperature :
+        (m_fmod_active_temp > 0 || filament_id < 0
+            ? m_fmod_active_temp
+            : ((on_first_layer() || m_config.nozzle_temperature.get_at(filament_id) == 0)
+                ? m_config.nozzle_temperature_initial_layer.get_at(filament_id)
+                : m_config.nozzle_temperature.get_at(filament_id)));
+    const PrintRegionConfig &spatial_config = m_print->get_print_region(region_id).config();
 
-    std::string gcode = filament_modifier_transition();
-    gcode += _extrude(path, std::move(description), speed);
+    FilamentModifierScope scope;
+    scope.config = &spatial_config;
+    scope.tool = tool;
+    scope.pressure_advance_tool = filament_id;
+    const int modifier_temp = spatial_config.modifier_nozzle_temperature.value;
+    if (filament_id >= 0 && modifier_temp > 0) {
+        scope.temperature = modifier_temp;
+        scope.restore_temperature = effective_temp;
+    }
 
-    m_config.modifier_nozzle_temperature.value   = previous.nozzle_temperature;
-    m_config.modifier_max_volumetric_speed.value = previous.max_volumetric_speed;
-    m_config.modifier_pressure_advance.value     = previous.pressure_advance;
-    m_config.print_flow_ratio.value               = previous.print_flow_ratio;
-    m_config.modifier_fan_speed.value             = previous.fan_speed;
-    m_config.modifier_aux_fan_speed.value         = previous.aux_fan_speed;
-    return gcode;
+    const double modifier_pa = spatial_config.modifier_pressure_advance.value;
+    if (filament_id >= 0 && modifier_pa >= 0.) {
+        scope.pressure_advance = modifier_pa;
+        const double role_pressure_advance =
+            tool >= 0 && size_t(tool) < m_fmod_role_pressure_advances.size()
+                ? m_fmod_role_pressure_advances[tool] : -1.;
+        scope.restore_pressure_advance = role_pressure_advance >= 0. ? role_pressure_advance :
+            (m_fmod_active_pa >= 0.
+                ? m_fmod_active_pa
+                : (m_config.enable_pressure_advance.get_at(filament_id) ? m_config.pressure_advance.get_at(filament_id) : 0.));
+    }
+    return _extrude(path, std::move(description), speed, &scope);
 }
 
 
@@ -6453,7 +6615,7 @@ std::string GCode::extrude_support(const ExtrusionEntityCollection &support_fill
     static constexpr const char* support_transition_label = "support transition";
     static constexpr const char* support_ironing_label    = "support ironing";
 
-    static const auto speed_for_path = [&](double length, ExtrusionRole role, double default_speed = -1.0) {
+    const auto speed_for_path = [&](double length, ExtrusionRole role, double default_speed = -1.0) {
         if (!is_support(role) || length > SMALL_PERIMETER_LENGTH(NOZZLE_CONFIG(small_support_perimeter_threshold)))
             return default_speed;
 
@@ -6629,9 +6791,12 @@ double GCode::calc_max_volumetric_speed(const double layer_height, const double 
     return res;
 }
 
-std::string GCode::_extrude(const ExtrusionPath &path, std::string description, double speed)
+std::string GCode::_extrude(const ExtrusionPath &path, std::string description, double speed,
+                            const FilamentModifierScope *filament_modifier_scope)
 {
     std::string gcode;
+    const PrintRegionConfig *spatial_config =
+        filament_modifier_scope == nullptr ? nullptr : filament_modifier_scope->config;
 
     // Orca: wave-overhang debug-gcode markers (per-path scope).
     const bool emit_wave_overhang_markers = path.wave_overhang && m_config.wave_overhang_debug_gcode.value;
@@ -6675,16 +6840,12 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                  wave_floor_main_fan, wave_floor_aux_fan);
         gcode += buf;
     }
-    const int fmod_main_fan = m_config.modifier_fan_speed.value;
-    const int fmod_aux_fan  = m_config.modifier_aux_fan_speed.value;
+    const int fmod_main_fan = spatial_config == nullptr
+        ? m_config.modifier_fan_speed.value : spatial_config->modifier_fan_speed.value;
+    const int fmod_aux_fan = spatial_config == nullptr
+        ? m_config.modifier_aux_fan_speed.value : spatial_config->modifier_aux_fan_speed.value;
     const bool filament_modifier_fan_active = (fmod_main_fan >= 0 || fmod_aux_fan >= 0)
                                              && m_enable_cooling_markers;
-    if (filament_modifier_fan_active) {
-        char buf[64];
-        snprintf(buf, sizeof(buf), ";_FILAMENT_MODIFIER_FAN_START %d %d\n",
-                 fmod_main_fan, fmod_aux_fan);
-        gcode += buf;
-    }
 
     // Orca: wave-overhang nozzle temperature override. M104 (no wait) at region start,
     // restored at region end. The first wave line prints at mixed temperature; by the
@@ -6822,7 +6983,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     // calculate effective extrusion length per distance unit (e_per_mm)
     double filament_flow_ratio = FILAMENT_CONFIG(filament_flow_ratio);
     // We set _mm3_per_mm to effectove flow = Geometric volume * print flow ratio * filament flow ratio * role-based-flow-ratios
-    auto _mm3_per_mm = path.mm3_per_mm * this->config().print_flow_ratio;
+    const double print_flow_ratio = spatial_config == nullptr
+        ? m_config.print_flow_ratio.value : spatial_config->print_flow_ratio.value;
+    auto _mm3_per_mm = path.mm3_per_mm * print_flow_ratio;
     _mm3_per_mm *= filament_flow_ratio;
 
     if (path.role() == erTopSolidInfill) {
@@ -6905,7 +7068,8 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
         }
     }
     //BBS: if not set the speed, then use the effective filament max volumetric speed directly
-    const double modifier_max_volumetric_speed = m_config.modifier_max_volumetric_speed.value;
+    const double modifier_max_volumetric_speed = spatial_config == nullptr
+        ? m_config.modifier_max_volumetric_speed.value : spatial_config->modifier_max_volumetric_speed.value;
     double effective_max_volumetric_speed = modifier_max_volumetric_speed > 0.
         ? modifier_max_volumetric_speed
         : FILAMENT_CONFIG(filament_max_volumetric_speed);
@@ -7138,7 +7302,9 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                        m_curr_print->calib_mode() == CalibMode::Calib_PA_Tower; 
     bool evaluate_adaptive_pa = false;
     bool role_change = (m_last_extrusion_role != path.role());
-    if (!is_pa_calib && FILAMENT_CONFIG(adaptive_pressure_advance) && FILAMENT_CONFIG(enable_pressure_advance) && m_config.modifier_pressure_advance.value < 0.) {
+    const double modifier_pressure_advance = spatial_config == nullptr
+        ? m_config.modifier_pressure_advance.value : spatial_config->modifier_pressure_advance.value;
+    if (!is_pa_calib && FILAMENT_CONFIG(adaptive_pressure_advance) && FILAMENT_CONFIG(enable_pressure_advance) && modifier_pressure_advance < 0.) {
         evaluate_adaptive_pa = true;
         // If we have already emmited a PA change because the m_multi_flow_segment_path_pa_set is set
         // skip re-issuing the PA change tag.
@@ -7156,8 +7322,10 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     // Orca: End of dynamic PA trigger flag segment
     
     //Orca: process custom gcode for extrusion role change
+    const int current_filament_id = m_writer.filament()->id();
+    const int current_tool = int(get_extruder_id(current_filament_id));
+    std::string role_change_gcode;
     if (path.role() != m_last_extrusion_role) {
-        const auto current_filament_id = m_writer.filament()->id();
         const std::string& machine_role_change_gcode  = m_config.change_extrusion_role_gcode.value;
         const std::string& filament_role_change_gcode = m_config.filament_change_extrusion_role_gcode.get_at(current_filament_id);
         const std::string& process_role_change_gcode  = m_config.process_change_extrusion_role_gcode.value;
@@ -7169,15 +7337,74 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
             config.set_key_value("layer_num", new ConfigOptionInt(m_layer_index + 1));
             config.set_key_value("layer_z", new ConfigOptionFloat(m_layer == nullptr ? m_last_height : m_layer->print_z));
 
-            const auto append_role_gcode = [this, current_filament_id, &config, &gcode](const std::string& key, const std::string& templ) {
+            const auto append_role_gcode = [this, current_filament_id, &config, &role_change_gcode](const std::string& key, const std::string& templ) {
                 if (templ.empty())
                     return;
-                gcode += this->placeholder_parser_process(key, templ, current_filament_id, &config) + "\n";
+                role_change_gcode += this->placeholder_parser_process(key, templ, current_filament_id, &config) + "\n";
             };
 
             append_role_gcode("change_extrusion_role_gcode", machine_role_change_gcode);
             append_role_gcode("filament_change_extrusion_role_gcode", filament_role_change_gcode);
             append_role_gcode("process_change_extrusion_role_gcode", process_role_change_gcode);
+            gcode += role_change_gcode;
+        }
+    }
+
+    int restore_temperature = filament_modifier_scope == nullptr ? -1 : filament_modifier_scope->restore_temperature;
+    double restore_pressure_advance = filament_modifier_scope == nullptr ? -1. : filament_modifier_scope->restore_pressure_advance;
+    bool custom_pressure_advance = false;
+    int custom_main_fan = m_fmod_role_main_fan;
+    int custom_aux_fan = m_fmod_role_aux_fan;
+    if (!role_change_gcode.empty()) {
+        custom_gcode_sets_fans(role_change_gcode, m_writer.get_gcode_flavor(),
+                               custom_main_fan, custom_aux_fan);
+        m_fmod_role_main_fan = custom_main_fan;
+        m_fmod_role_aux_fan = custom_aux_fan;
+    }
+
+    int role_temperature = -1;
+    if (!role_change_gcode.empty() &&
+        custom_gcode_sets_temperature_for_tool(role_change_gcode, m_writer.get_gcode_flavor(),
+                                               current_tool, role_temperature)) {
+        if (m_fmod_role_temperatures.size() <= size_t(current_tool))
+            m_fmod_role_temperatures.resize(size_t(current_tool) + 1, -1);
+        m_fmod_role_temperatures[current_tool] = role_temperature;
+        if (filament_modifier_scope != nullptr && filament_modifier_scope->temperature >= 0)
+            restore_temperature = role_temperature;
+    }
+
+    double role_pressure_advance = -1.;
+    if (!role_change_gcode.empty() &&
+        custom_gcode_sets_pressure_advance(role_change_gcode, role_pressure_advance)) {
+        if (m_fmod_role_pressure_advances.size() <= size_t(current_tool))
+            m_fmod_role_pressure_advances.resize(size_t(current_tool) + 1, -1.);
+        m_fmod_role_pressure_advances[current_tool] = role_pressure_advance;
+        if (filament_modifier_scope != nullptr && filament_modifier_scope->pressure_advance >= 0.) {
+            restore_pressure_advance = role_pressure_advance;
+            custom_pressure_advance = true;
+        }
+    }
+    const bool scoped_temperature_active = filament_modifier_scope != nullptr &&
+                                           filament_modifier_scope->temperature >= 0 &&
+                                           filament_modifier_scope->temperature != restore_temperature;
+
+    if (filament_modifier_fan_active) {
+        char marker[96];
+        snprintf(marker, sizeof(marker), ";_FILAMENT_MODIFIER_FAN_START %d %d %d %d\n",
+                 fmod_main_fan, fmod_aux_fan, custom_main_fan, custom_aux_fan);
+        gcode += marker;
+    }
+    if (filament_modifier_scope != nullptr) {
+        if (scoped_temperature_active)
+            gcode += m_writer.set_temperature(filament_modifier_scope->temperature, false,
+                                              filament_modifier_scope->tool);
+        if (filament_modifier_scope->pressure_advance >= 0.) {
+            char marker[112];
+            snprintf(marker, sizeof(marker), ";_FILAMENT_MODIFIER_PA_START %d %g %g %d\n",
+                     filament_modifier_scope->pressure_advance_tool, filament_modifier_scope->pressure_advance,
+                     restore_pressure_advance, int(custom_pressure_advance));
+            gcode += marker;
+            gcode += m_writer.set_pressure_advance(filament_modifier_scope->pressure_advance);
         }
     }
 
@@ -7347,7 +7574,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                FILAMENT_CONFIG(adaptive_pressure_advance) &&
                FILAMENT_CONFIG(enable_pressure_advance) &&
                FILAMENT_CONFIG(adaptive_pressure_advance_overhangs) &&
-               m_config.modifier_pressure_advance.value < 0. &&
+               modifier_pressure_advance < 0. &&
                !evaluate_adaptive_pa){
                 if(writer().get_current_speed() > F){ // Ramping down speed - use overhang logic where the minimum speed is used between current and upcoming extrusion
                     if(m_config.gcode_comments){
@@ -7578,7 +7805,7 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
                    EXTRUDER_CONFIG(adaptive_pressure_advance) &&
                    EXTRUDER_CONFIG(enable_pressure_advance) &&
                    EXTRUDER_CONFIG(adaptive_pressure_advance_overhangs) &&
-                   m_config.modifier_pressure_advance.value < 0. ){
+                   modifier_pressure_advance < 0. ){
                     if(last_set_speed > new_speed){ // Ramping down speed - use overhang logic where the minimum speed is used between current and upcoming extrusion
                         if(m_config.gcode_comments) {
                             sprintf(buf, "; Ramp up-variable\n");
@@ -7664,6 +7891,14 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
 
         }
     }
+    if (filament_modifier_scope != nullptr) {
+        if (filament_modifier_scope->pressure_advance >= 0.)
+            gcode += ";_FILAMENT_MODIFIER_PA_END\n";
+        if (scoped_temperature_active)
+            gcode += m_writer.set_temperature(restore_temperature, false, filament_modifier_scope->tool);
+    }
+    if (filament_modifier_fan_active)
+        gcode += ";_FILAMENT_MODIFIER_FAN_END\n";
     if (m_enable_cooling_markers) {
             gcode += ";_EXTRUDE_END\n";
     }
@@ -7675,8 +7910,6 @@ std::string GCode::_extrude(const ExtrusionPath &path, std::string description, 
     this->set_last_pos(path.last_point());
 
     // Orca: wave-overhang — close fan-override scope and clear state flag.
-    if (filament_modifier_fan_active)
-        gcode += ";_FILAMENT_MODIFIER_FAN_END\n";
     if (wave_fan_active || wave_floor_fan_active)
         gcode += ";_WAVE_OVERHANG_FAN_END\n";
     if (wave_temp_active && restore_nozzle_temp > 0) {
@@ -8210,7 +8443,7 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
             gcode += m_writer.set_pressure_advance(m_config.pressure_advance.get_at(new_filament_id));
             // Orca: Adaptive PA
             // Reset Adaptive PA processor last PA value
-            m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(new_filament_id));
+            m_pa_processor->resetPreviousPA(new_filament_id, m_config.pressure_advance.get_at(new_filament_id));
         }
         m_fmod_active_temp = 0;
         m_fmod_active_pa = -1.;
@@ -8520,7 +8753,7 @@ std::string GCode::set_extruder(unsigned int new_filament_id, double print_z, bo
         gcode += m_writer.set_pressure_advance(m_config.pressure_advance.get_at(new_filament_id));
         // Orca: Adaptive PA
         // Reset Adaptive PA processor last PA value
-        m_pa_processor->resetPreviousPA(m_config.pressure_advance.get_at(new_filament_id));
+        m_pa_processor->resetPreviousPA(new_filament_id, m_config.pressure_advance.get_at(new_filament_id));
     }
     m_fmod_active_temp = 0;
     m_fmod_active_pa = -1.;

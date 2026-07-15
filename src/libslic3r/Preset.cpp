@@ -1040,6 +1040,7 @@ static std::vector<std::string> s_Preset_print_options{
     "wave_overhang_fan_speed",
     "wave_overhang_aux_fan_speed",
     "wave_overhang_nozzle_temp",
+    "filament_modifier_scope",
     "modifier_nozzle_temperature",
     "modifier_max_volumetric_speed",
     "modifier_pressure_advance",

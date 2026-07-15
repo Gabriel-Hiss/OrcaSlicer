@@ -58,6 +58,7 @@ private:
     unsigned int                m_current_nozzle;
     //BBS: current fan speed
     int                         m_current_fan_speed;
+    int                         m_current_additional_fan_speed;
 };
 
 }

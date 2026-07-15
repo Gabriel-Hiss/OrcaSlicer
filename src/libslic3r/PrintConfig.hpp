@@ -100,6 +100,13 @@ enum class WaveOverhangPattern : int {
     Smart
 };
 
+enum class FilamentModifierScope : int {
+    Model,
+    ModelSupport,
+    ModelSupportAdhesion,
+};
+
+
 enum AuthorizationType {
     atKeyPassword, atUserPassword
 };
@@ -585,6 +592,8 @@ CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(PowerLossRecoveryMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WaveOverhangSpacingMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WaveOverhangSeamMode)
 CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(WaveOverhangPattern)
+CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS(FilamentModifierScope)
+
 
 #undef CONFIG_OPTION_ENUM_DECLARE_STATIC_MAPS
 
@@ -1218,6 +1227,7 @@ PRINT_CONFIG_CLASS_DEFINE(
     ((ConfigOptionInt,                       wave_overhang_floor_fan_speed))
     ((ConfigOptionInt,                       wave_overhang_floor_aux_fan_speed))
     ((ConfigOptionInt,                       wave_overhang_nozzle_temp))
+    ((ConfigOptionEnum<FilamentModifierScope>, filament_modifier_scope))
     ((ConfigOptionInt,                       modifier_nozzle_temperature))
     ((ConfigOptionFloat,                     modifier_max_volumetric_speed))
     ((ConfigOptionFloat,                     modifier_pressure_advance))

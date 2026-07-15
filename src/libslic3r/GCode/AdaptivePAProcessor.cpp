@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdlib>
+#include <utility>
 
 namespace Slic3r {
 
@@ -25,7 +26,6 @@ namespace Slic3r {
 AdaptivePAProcessor::AdaptivePAProcessor(GCode &gcodegen, const std::vector<unsigned int> &tools_used)
     : m_gcodegen(gcodegen),
       m_config(gcodegen.config()),
-      m_last_predicted_pa(0.0),
       m_max_next_feedrate(0.0),
       m_next_feedrate(0.0),
       m_current_feedrate(0.0),
@@ -73,18 +73,50 @@ std::string AdaptivePAProcessor::process_layer(std::string &&gcode) {
     unsigned int accel_value = 0;
     std::string pa_change_line;
     bool wipe_command = false;
+    std::vector<std::pair<unsigned int, double>> filament_modifier_pa_stack;
 
     // Iterate through each line of the layer G-code
     while (std::getline(stream, line)) {
+        constexpr char filament_modifier_pa_start_marker[] = ";_FILAMENT_MODIFIER_PA_START ";
+        constexpr char filament_modifier_pa_end_marker[] = ";_FILAMENT_MODIFIER_PA_END";
+        if (line.compare(0, sizeof(filament_modifier_pa_start_marker) - 1, filament_modifier_pa_start_marker) == 0) {
+            std::istringstream marker(line.substr(sizeof(filament_modifier_pa_start_marker) - 1));
+            unsigned int tool = 0;
+            double pa = -1.;
+            double fallback_pa = -1.;
+            int force_fallback = 0;
+            std::string extra;
+            if (marker >> tool >> pa >> fallback_pa >> force_fallback && !(marker >> extra) &&
+                std::isfinite(pa) && pa >= 0. && std::isfinite(fallback_pa) && fallback_pa >= 0.) {
+                const auto known_pa = m_last_predicted_pa.find(tool);
+                const bool tool_changed = m_last_extruder_id != int(tool);
+                const double entry_pa = force_fallback != 0 || tool_changed || known_pa == m_last_predicted_pa.end()
+                    ? fallback_pa
+                    : known_pa->second;
+                filament_modifier_pa_stack.emplace_back(tool, entry_pa);
+                m_last_extruder_id = int(tool);
+                m_last_predicted_pa[tool] = pa;
+                continue;
+            }
+        } else if (line == filament_modifier_pa_end_marker) {
+            if (!filament_modifier_pa_stack.empty()) {
+                const auto [tool, pa] = filament_modifier_pa_stack.back();
+                filament_modifier_pa_stack.pop_back();
+                output << m_gcodegen.writer().set_pressure_advance(pa);
+                m_last_extruder_id = int(tool);
+                m_last_predicted_pa[tool] = pa;
+            }
+            continue;
+        }
         constexpr char filament_modifier_pa_marker[] = ";_FILAMENT_MODIFIER_PA ";
         if (line.compare(0, sizeof(filament_modifier_pa_marker) - 1, filament_modifier_pa_marker) == 0) {
-            const char *value = line.c_str() + sizeof(filament_modifier_pa_marker) - 1;
-            char *end = nullptr;
-            const double pa = std::strtod(value, &end);
-            while (std::isspace(static_cast<unsigned char>(*end)))
-                ++end;
-            if (end != value && *end == '\0' && std::isfinite(pa) && pa >= 0.0) {
-                m_last_predicted_pa = pa;
+            std::istringstream marker(line.substr(sizeof(filament_modifier_pa_marker) - 1));
+            unsigned int tool = 0;
+            double pa = -1.;
+            std::string extra;
+            if (marker >> tool >> pa && !(marker >> extra) && std::isfinite(pa) && pa >= 0.) {
+                m_last_extruder_id = int(tool);
+                m_last_predicted_pa[tool] = pa;
                 continue;
             }
         }
@@ -121,6 +153,11 @@ std::string AdaptivePAProcessor::process_layer(std::string &&gcode) {
         // For a mixed extruder layer with both adaptive PA enabled and disabled when the new tool is selected
         // the PA for that material is set. As no tag below will be found for this extruder, the original PA is retained.
         if (line.find("; PA_CHANGE") == 0) { // prune lines quickly before running regex check as regex is more expensive to run
+            if (!filament_modifier_pa_stack.empty()) {
+                if (m_config.gcode_comments)
+                    output << line << '\n';
+                continue;
+            }
             if (std::regex_search(line, m_match, m_pa_change_pattern)) {
                 int extruder_id = std::stoi(m_match[1].str());
                 mm3mm_value = std::stod(m_match[2].str());
@@ -129,8 +166,11 @@ std::string AdaptivePAProcessor::process_layer(std::string &&gcode) {
                 int roleChange = std::stoi(m_match[5].str());
                 int isOverhang = std::stoi(m_match[6].str());
                 
-                // Check if the extruder ID has changed
                 bool extruder_changed = (extruder_id != m_last_extruder_id);
+                const auto previous_pa_it = m_last_predicted_pa.find(extruder_id);
+                const double previous_pa = previous_pa_it == m_last_predicted_pa.end()
+                    ? (m_config.enable_pressure_advance.get_at(extruder_id) ? m_config.pressure_advance.get_at(extruder_id) : 0.)
+                    : previous_pa_it->second;
                 m_last_extruder_id = extruder_id;
                 
                 // Save the PA_CHANGE line to output later after finding feedrate
@@ -281,12 +321,11 @@ std::string AdaptivePAProcessor::process_layer(std::string &&gcode) {
                     output << "; APA Max Next Speed: " << std::to_string(m_max_next_feedrate) << "\n";
                     output << "; APA Speed Used: " << std::to_string(adaptive_PA_speed) << "\n";
                     output << "; APA Flow rate: " << std::to_string(mm3mm_value * m_max_next_feedrate) << "\n";
-                    output << "; APA Prev PA: " << std::to_string(m_last_predicted_pa) << " New PA: " << std::to_string(predicted_pa) << "\n"; 
+                    output << "; APA Prev PA: " << std::to_string(previous_pa) << " New PA: " << std::to_string(predicted_pa) << "\n";
                 }
-                if (extruder_changed || std::fabs(predicted_pa - m_last_predicted_pa) > EPSILON) {
+                if (extruder_changed || std::fabs(predicted_pa - previous_pa) > EPSILON)
                     output << m_gcodegen.writer().set_pressure_advance(predicted_pa); // Use m_writer to set pressure advance
-                    m_last_predicted_pa = predicted_pa; // Update the last predicted PA value
-                }
+                m_last_predicted_pa[extruder_id] = predicted_pa;
             }
         }else {
             // Output the current line as this isn't a PA change tag

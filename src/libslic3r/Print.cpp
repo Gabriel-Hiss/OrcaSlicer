@@ -2370,6 +2370,7 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                     PrintObject* obj = m_objects[i];
                     if (need_slicing_objects.count(obj) != 0) {
                         obj->generate_support_material();
+                        obj->apply_filament_modifier_regions_to_support();
                     }
                     else {
                         if (obj->set_started(posSupportMaterial))
@@ -2416,6 +2417,7 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
                 for (Layer *layer : obj->layers())
                     layer->apply_filament_modifier_regions();
                 obj->generate_support_material();
+                obj->apply_filament_modifier_regions_to_support();
                 obj->detect_overhangs_for_lift();
                 obj->estimate_curled_extrusions();
             }
@@ -2576,6 +2578,7 @@ void Print::process(long long *time_cost_with_cache, bool use_cache)
             // include brims when grouping and offsetting skirt loops.
             assert(m_skirt.empty());
             _make_skirt();
+            apply_filament_modifier_regions_to_adhesion();
             if (m_config.print_sequence == PrintSequence::ByObject &&
                 m_config.skirt_type == stPerObject &&
                 this->has_shared_per_object_skirt()) {
@@ -2668,6 +2671,87 @@ std::string Print::export_gcode(const std::string& path_template, GCodeProcessor
     if (result != nullptr)
         result->conflict_result = m_conflict_result;
     return path.c_str();
+}
+
+void Print::apply_filament_modifier_regions_to_adhesion()
+{
+    struct ShiftedModifierMasks {
+        std::vector<std::pair<int, ExPolygons>> brim;
+        std::vector<std::pair<int, ExPolygons>> skirt;
+    };
+    std::map<ObjectID, ShiftedModifierMasks> masks_by_object;
+
+    for (const PrintObject *object : m_objects) {
+        if (object->layers().empty() || object->firstLayerObjSlice().empty())
+            continue;
+
+        const std::vector<float> first_layer_z { float(object->layers().front()->slice_z) };
+        std::vector<PrintObject::FilamentModifierMasks> object_masks =
+            object->filament_modifier_masks(
+                first_layer_z, object->firstLayerObjSlice(),
+                FilamentModifierScope::ModelSupportAdhesion);
+        if (object_masks.empty() || object_masks.front().empty())
+            continue;
+
+        ShiftedModifierMasks &shifted_masks = masks_by_object[object->id()];
+        for (const auto &[print_region_id, mask] : object_masks.front()) {
+            ExPolygons brim_mask;
+            ExPolygons skirt_mask;
+            for (const PrintInstance &instance : object->instances()) {
+                ExPolygons shifted = mask;
+                for (ExPolygon &expolygon : shifted)
+                    expolygon.translate(instance.shift_without_plate_offset());
+                append(brim_mask, std::move(shifted));
+
+                shifted = mask;
+                for (ExPolygon &expolygon : shifted)
+                    expolygon.translate(instance.shift);
+                append(skirt_mask, std::move(shifted));
+            }
+            shifted_masks.brim.emplace_back(print_region_id, union_ex(brim_mask));
+            shifted_masks.skirt.emplace_back(print_region_id, union_ex(skirt_mask));
+        }
+    }
+
+    auto apply_masks = [&masks_by_object](
+        ExtrusionEntityCollection &collection,
+        const std::vector<ObjectID> &object_ids,
+        bool skirt_coordinates) {
+        for (ObjectID object_id : object_ids) {
+            auto object_masks = masks_by_object.find(object_id);
+            if (object_masks == masks_by_object.end())
+                continue;
+            const auto &masks = skirt_coordinates ? object_masks->second.skirt : object_masks->second.brim;
+            for (const auto &[print_region_id, mask] : masks)
+                split_filament_modifier_region(collection, mask, print_region_id);
+        }
+    };
+
+    for (auto &[object_id, brim] : m_brimMap) {
+        std::vector<ObjectID> owners { object_id };
+        if (m_config.combine_brims && m_brimMap.size() == 1) {
+            owners.clear();
+            for (const auto &[owner_id, areas] : m_objectBrimAreas)
+                if (!areas.empty())
+                    owners.push_back(owner_id);
+        }
+        apply_masks(brim, owners, false);
+    }
+    for (auto &[object_id, brim] : m_supportBrimMap)
+        apply_masks(brim, { object_id }, false);
+
+    for (SkirtBrimGroup &group : m_skirt_brim_groups) {
+        apply_masks(group.skirt, group.object_ids, true);
+        for (SkirtBrimGroup::Brim &brim : group.brims) {
+            std::vector<ObjectID> owners;
+            for (ObjectID object_id : brim.object_ids) {
+                auto areas = m_objectBrimAreas.find(object_id);
+                if (areas != m_objectBrimAreas.end() && !areas->second.empty())
+                    owners.push_back(object_id);
+            }
+            apply_masks(brim.brim, owners, false);
+        }
+    }
 }
 
 void Print::_make_skirt()
@@ -3943,6 +4027,8 @@ const std::string PrintStatistics::TotalFilamentUsedWipeTowerValueMask = "; tota
 #define JSON_ARC_FITTING            "arc_fitting"
 #define JSON_OBJECT_NAME            "name"
 #define JSON_IDENTIFY_ID          "identify_id"
+#define JSON_FILAMENT_MODIFIER_REGION_ID_VERSION "filament_modifier_region_id_version"
+static constexpr int FILAMENT_MODIFIER_REGION_ID_VERSION = 1;
 
 
 #define JSON_LAYERS                  "layers"
@@ -4021,7 +4107,8 @@ const std::string PrintStatistics::TotalFilamentUsedWipeTowerValueMask = "; tota
 #define JSON_EXTRUSION_ROLE                    "role"
 #define JSON_EXTRUSION_NO_EXTRUSION            "no_extrusion"
 #define JSON_EXTRUSION_LOOP_ROLE               "loop_role"
-#define JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID "filament_modifier_region_id"
+// Stored value is the global PrintRegion::print_region_id().
+#define JSON_EXTRUSION_FILAMENT_MODIFIER_PRINT_REGION_ID "filament_modifier_print_region_id"
 
 
 static void to_json(json& j, const Points& p_s) {
@@ -4115,7 +4202,7 @@ static void to_json(json& j, const ExtrusionPath& extrusion_path) {
     j[JSON_EXTRUSION_ROLE] = extrusion_path.role();
     j[JSON_EXTRUSION_NO_EXTRUSION] = extrusion_path.is_force_no_extrusion();
     if (extrusion_path.filament_modifier_region_id() >= 0)
-        j[JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID] = extrusion_path.filament_modifier_region_id();
+        j[JSON_EXTRUSION_FILAMENT_MODIFIER_PRINT_REGION_ID] = extrusion_path.filament_modifier_region_id();
 }
 
 static bool convert_extrusion_to_json(json& entity_json, json& entity_paths_json, const ExtrusionEntity* extrusion_entity) {
@@ -4393,7 +4480,7 @@ static void from_json(const json& j, ExtrusionPath& extrusion_path) {
     extrusion_path.height                 =    j[JSON_EXTRUSION_HEIGHT];
     extrusion_path.set_extrusion_role(j[JSON_EXTRUSION_ROLE]);
     extrusion_path.set_force_no_extrusion(j[JSON_EXTRUSION_NO_EXTRUSION]);
-    extrusion_path.set_filament_modifier_region_id(j.value(JSON_EXTRUSION_FILAMENT_MODIFIER_REGION_ID, -1));
+    extrusion_path.set_filament_modifier_region_id(j.value(JSON_EXTRUSION_FILAMENT_MODIFIER_PRINT_REGION_ID, -1));
 }
 
 static bool convert_extrusion_from_json(const json& entity_json, ExtrusionEntityCollection& entity_collection) {
@@ -4767,6 +4854,7 @@ int Print::export_cached_data(const std::string& directory, bool with_space)
 
             root_json[JSON_OBJECT_NAME] = model_obj->name;
             root_json[JSON_IDENTIFY_ID] = identify_id;
+            root_json[JSON_FILAMENT_MODIFIER_REGION_ID_VERSION] = FILAMENT_MODIFIER_REGION_ID_VERSION;
 
             //export the layers
             std::vector<json> layers_json_vector(obj->layer_count());
@@ -5020,6 +5108,15 @@ int Print::load_cached_data(const std::string& directory)
     if (ret) {
         BOOST_LOG_TRIVIAL(error) << __FUNCTION__<< boost::format(": load json failed.");
         return ret;
+    }
+
+    for (const json &root_json : object_jsons) {
+        if (!root_json.is_object() ||
+            root_json.value(JSON_FILAMENT_MODIFIER_REGION_ID_VERSION, 0) != FILAMENT_MODIFIER_REGION_ID_VERSION) {
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__
+                << ": cached extrusion modifier IDs are not global PrintRegion IDs; reslicing";
+            return CLI_IMPORT_CACHE_DATA_CAN_NOT_USE;
+        }
     }
 
     for (int obj_index = 0; obj_index < object_jsons.size(); obj_index++) {

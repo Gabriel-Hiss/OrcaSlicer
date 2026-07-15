@@ -480,6 +480,105 @@ static std::vector<std::vector<ExPolygons>> slices_to_regions(
     return slices_by_region;
 }
 
+static bool same_filament_modifier_config(const PrintRegionConfig &lhs, const PrintRegionConfig &rhs)
+{
+    return lhs.modifier_nozzle_temperature.value   == rhs.modifier_nozzle_temperature.value
+        && lhs.modifier_max_volumetric_speed.value == rhs.modifier_max_volumetric_speed.value
+        && lhs.modifier_pressure_advance.value     == rhs.modifier_pressure_advance.value
+        && lhs.print_flow_ratio.value               == rhs.print_flow_ratio.value
+        && lhs.modifier_fan_speed.value             == rhs.modifier_fan_speed.value
+        && lhs.modifier_aux_fan_speed.value         == rhs.modifier_aux_fan_speed.value;
+}
+
+static bool filament_modifier_region_enabled(
+    const PrintObjectRegions::LayerRangeRegions &layer_range,
+    const PrintObjectRegions::VolumeRegion &region,
+    FilamentModifierScope minimum_scope)
+{
+    if (!region.model_volume->is_filament_modifier() || region.region == nullptr || region.parent < 0)
+        return false;
+
+    const PrintRegion *parent_region = layer_range.volume_regions[region.parent].region;
+    return parent_region != nullptr
+        && int(region.region->config().filament_modifier_scope.value) >= int(minimum_scope)
+        && !same_filament_modifier_config(region.region->config(), parent_region->config());
+}
+
+std::vector<PrintObject::FilamentModifierMasks> PrintObject::filament_modifier_masks(
+    const std::vector<float> &zs,
+    const std::vector<VolumeSlices> &volume_slices,
+    FilamentModifierScope minimum_scope) const
+{
+    std::vector<FilamentModifierMasks> masks(zs.size());
+    if (zs.empty() || volume_slices.empty())
+        return masks;
+
+    const std::vector<PrintObjectRegions::LayerRangeRegions> &layer_ranges = m_shared_regions->layer_ranges;
+    for (size_t z_idx = 0; z_idx < zs.size(); ++z_idx) {
+        const float z = zs[z_idx];
+        auto layer_range = lower_bound_by_predicate(
+            layer_ranges.begin(), layer_ranges.end(),
+            [z](const PrintObjectRegions::LayerRangeRegions &range) {
+                return range.layer_height_range.second <= z;
+            });
+        if (layer_range == layer_ranges.end() || z < layer_range->layer_height_range.first)
+            continue;
+
+        // split_filament_modifier_region overwrites an existing tag inside its mask,
+        // matching the model-region rule that the last overlapping modifier wins.
+        for (const PrintObjectRegions::VolumeRegion &region : layer_range->volume_regions) {
+            if (!filament_modifier_region_enabled(*layer_range, region, minimum_scope))
+                continue;
+
+            const ObjectID volume_id = region.model_volume->id();
+            auto slices = lower_bound_by_predicate(
+                volume_slices.begin(), volume_slices.end(),
+                [volume_id](const VolumeSlices &item) { return item.volume_id < volume_id; });
+            if (slices != volume_slices.end() && slices->volume_id == volume_id &&
+                z_idx < slices->slices.size() && !slices->slices[z_idx].empty())
+                masks[z_idx].emplace_back(region.region->print_region_id(), slices->slices[z_idx]);
+        }
+    }
+    return masks;
+}
+
+void PrintObject::apply_filament_modifier_regions_to_support()
+{
+    if (m_support_layers.empty())
+        return;
+
+    const FilamentModifierScope minimum_scope = FilamentModifierScope::ModelSupport;
+    bool has_active_modifier = false;
+    for (const PrintObjectRegions::LayerRangeRegions &layer_range : m_shared_regions->layer_ranges)
+        for (const PrintObjectRegions::VolumeRegion &region : layer_range.volume_regions)
+            if (filament_modifier_region_enabled(layer_range, region, minimum_scope)) {
+                has_active_modifier = true;
+                break;
+            }
+    if (!has_active_modifier)
+        return;
+
+    ModelVolumePtrs modifier_volumes;
+    for (ModelVolume *volume : model_object()->volumes)
+        if (volume->is_filament_modifier())
+            modifier_volumes.push_back(volume);
+
+    std::vector<float> support_zs;
+    support_zs.reserve(m_support_layers.size());
+    for (const SupportLayer *layer : m_support_layers)
+        support_zs.push_back(float(layer->print_z - 0.5 * layer->height));
+    const std::vector<VolumeSlices> volume_slices = slice_volumes_inner(
+        print()->config(), config(), trafo_centered(), std::move(modifier_volumes),
+        m_shared_regions->layer_ranges, support_zs, [this]() { print()->throw_if_canceled(); });
+    std::vector<FilamentModifierMasks> masks =
+        filament_modifier_masks(support_zs, volume_slices, minimum_scope);
+
+    for (size_t layer_idx = 0; layer_idx < m_support_layers.size(); ++layer_idx)
+        for (const auto &[print_region_id, mask] : masks[layer_idx])
+            split_filament_modifier_region(
+                m_support_layers[layer_idx]->support_fills, mask, print_region_id);
+}
+
 //BBS: justify whether a volume is connected to another one
 bool doesVolumeIntersect(VolumeSlices& vs1, VolumeSlices& vs2)
 {

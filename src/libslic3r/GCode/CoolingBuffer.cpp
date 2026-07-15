@@ -41,6 +41,7 @@ void CoolingBuffer::reset(const Vec3d &position)
     m_fan_speed = -1;
     m_additional_fan_speed = -1;
     m_current_fan_speed = -1;
+    m_current_additional_fan_speed = -1;
 }
 
 struct CoolingLine
@@ -117,6 +118,8 @@ struct CoolingLine
     int     wave_overhang_aux_fan_percent = -1;
     int     filament_modifier_fan_percent     = -1;
     int     filament_modifier_aux_fan_percent = -1;
+    int     filament_modifier_restore_fan_percent     = -1;
+    int     filament_modifier_restore_aux_fan_percent = -1;
 };
 
 // Calculate the required per extruder time stretches.
@@ -578,8 +581,17 @@ std::vector<PerExtruderAdjustments> CoolingBuffer::parse_layer_gcode(const std::
             advance_past_token();
             skip_ws();
             int aux_pct = parse_int(-1);
-            line.filament_modifier_fan_percent     = (main_pct < 0) ? -1 : std::clamp(main_pct, 0, 100);
-            line.filament_modifier_aux_fan_percent = (aux_pct  < 0) ? -1 : std::clamp(aux_pct,  0, 100);
+            advance_past_token();
+            skip_ws();
+            int restore_main_pct = parse_int(-1);
+            advance_past_token();
+            skip_ws();
+            int restore_aux_pct = parse_int(-1);
+            line.filament_modifier_fan_percent         = (main_pct < 0) ? -1 : std::clamp(main_pct, 0, 100);
+            line.filament_modifier_aux_fan_percent     = (aux_pct < 0) ? -1 : std::clamp(aux_pct, 0, 100);
+            line.filament_modifier_restore_fan_percent = (restore_main_pct < 0) ? -1 : std::clamp(restore_main_pct, 0, 100);
+            line.filament_modifier_restore_aux_fan_percent =
+                (restore_aux_pct < 0) ? -1 : std::clamp(restore_aux_pct, 0, 100);
         } else if (boost::starts_with(sline, ";_FILAMENT_MODIFIER_FAN_END")) {
             line.type = CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_END;
         } else if (boost::starts_with(sline, ";_INTERNAL_BRIDGE_FAN_START")) { // ORCA: Add support for separate internal bridge fan speed control
@@ -799,7 +811,20 @@ std::string CoolingBuffer::apply_layer_cooldown(
     int wave_aux_fan_speed = -1;
     int filament_modifier_fan_speed = 0;
     int filament_modifier_aux_fan_speed = -1;
-    auto change_extruder_set_fan = [ this, layer_id, layer_time, &new_gcode, part_cooling_fan_min_pwm,
+    int filament_modifier_saved_fan_speed = -1;
+    int filament_modifier_saved_aux_fan_speed = -1;
+    bool filament_modifier_fan_scope_active = false;
+    auto emit_fan = [this, &new_gcode, part_cooling_fan_min_pwm](int speed) {
+        new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, speed, part_cooling_fan_min_pwm);
+        m_current_fan_speed = speed;
+    };
+    auto emit_aux_fan = [this, &new_gcode](int speed) {
+        if (!m_config.auxiliary_fan.value)
+            return;
+        new_gcode += GCodeWriter::set_additional_fan(speed);
+        m_current_additional_fan_speed = speed;
+    };
+    auto change_extruder_set_fan = [ this, layer_id, layer_time, &emit_fan, &emit_aux_fan,
         &overhang_fan_control, &overhang_fan_speed,
         &internal_bridge_fan_control, &internal_bridge_fan_speed,
         &supp_interface_fan_control, &supp_interface_fan_speed,
@@ -915,15 +940,14 @@ std::string CoolingBuffer::apply_layer_cooldown(
         }
         if (fan_speed_new != m_fan_speed) {
             m_fan_speed = fan_speed_new;
-            m_current_fan_speed = fan_speed_new;
             if (immediately_apply)
-                new_gcode  += GCodeWriter::set_fan(m_config.gcode_flavor, m_fan_speed, part_cooling_fan_min_pwm);
+                emit_fan(m_fan_speed);
         }
         //BBS
         if (additional_fan_speed_new != m_additional_fan_speed) {
             m_additional_fan_speed = additional_fan_speed_new;
-            if (immediately_apply && m_config.auxiliary_fan.value)
-                new_gcode += GCodeWriter::set_additional_fan(m_additional_fan_speed);
+            if (immediately_apply)
+                emit_aux_fan(m_additional_fan_speed);
         }
     };
 
@@ -942,9 +966,7 @@ std::string CoolingBuffer::apply_layer_cooldown(
                                                                {CoolingLine::TYPE_FORCE_RESUME_FAN, false}};
     bool need_set_fan = false;
     auto emit_overridden_aux_fan = [&]() {
-        if (!m_config.auxiliary_fan.value)
-            return;
-        new_gcode += GCodeWriter::set_additional_fan(
+        emit_aux_fan(
             filament_modifier_aux_fan_speed >= 0 ? filament_modifier_aux_fan_speed :
             wave_aux_fan_speed >= 0 ? wave_aux_fan_speed : m_additional_fan_speed);
     };
@@ -1025,6 +1047,17 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 emit_overridden_aux_fan();
             }
         } else if (line->type & CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START) {
+            if (!filament_modifier_fan_scope_active) {
+                filament_modifier_saved_fan_speed = line->filament_modifier_restore_fan_percent >= 0
+                    ? line->filament_modifier_restore_fan_percent : m_current_fan_speed;
+                filament_modifier_saved_aux_fan_speed = line->filament_modifier_restore_aux_fan_percent >= 0
+                    ? line->filament_modifier_restore_aux_fan_percent : m_current_additional_fan_speed;
+                if (line->filament_modifier_restore_fan_percent >= 0)
+                    m_current_fan_speed = line->filament_modifier_restore_fan_percent;
+                if (line->filament_modifier_restore_aux_fan_percent >= 0)
+                    m_current_additional_fan_speed = line->filament_modifier_restore_aux_fan_percent;
+                filament_modifier_fan_scope_active = true;
+            }
             if (!fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START] &&
                 line->filament_modifier_fan_percent >= 0) {
                 filament_modifier_fan_speed = line->filament_modifier_fan_percent;
@@ -1036,13 +1069,22 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 emit_overridden_aux_fan();
             }
         } else if (line->type & CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_END) {
-            if (fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START]) {
-                fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START] = false;
-                need_set_fan = true;
-            }
-            if (filament_modifier_aux_fan_speed >= 0) {
-                filament_modifier_aux_fan_speed = -1;
-                emit_overridden_aux_fan();
+            if (filament_modifier_fan_scope_active) {
+                if (fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START]) {
+                    fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START] = false;
+                    if (filament_modifier_saved_fan_speed >= 0)
+                        emit_fan(filament_modifier_saved_fan_speed);
+                    else
+                        need_set_fan = true;
+                }
+                if (filament_modifier_aux_fan_speed >= 0) {
+                    filament_modifier_aux_fan_speed = -1;
+                    if (filament_modifier_saved_aux_fan_speed >= 0)
+                        emit_aux_fan(filament_modifier_saved_aux_fan_speed);
+                    else
+                        emit_overridden_aux_fan();
+                }
+                filament_modifier_fan_scope_active = false;
             }
         } else if (line->type & CoolingLine::TYPE_FORCE_RESUME_FAN) {
             // check if any fan speed change request is active
@@ -1050,8 +1092,8 @@ std::string CoolingBuffer::apply_layer_cooldown(
                 fan_speed_change_requests[CoolingLine::TYPE_FORCE_RESUME_FAN] = true;
                 need_set_fan = true;
             }
-            if (m_additional_fan_speed != -1 && m_config.auxiliary_fan.value)
-                new_gcode += GCodeWriter::set_additional_fan(m_additional_fan_speed);
+            if (m_additional_fan_speed != -1)
+                emit_aux_fan(m_additional_fan_speed);
         }
         else if (line->type & CoolingLine::TYPE_EXTRUDE_END) {
             // Just remove this comment.
@@ -1140,35 +1182,25 @@ std::string CoolingBuffer::apply_layer_cooldown(
 
         if (need_set_fan) {
             // Filament modifier wins over wave-overhang, which in turn wins over
-            // role-specific cooling. Both scopes restore the currently active
-            // lower-priority source at their END marker.
-            if (fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START]) {
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, filament_modifier_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = filament_modifier_fan_speed;
-            } else if (fan_speed_change_requests[CoolingLine::TYPE_WAVE_OVERHANG_FAN_START]) {
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, wave_overhang_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = wave_overhang_fan_speed;
-            } else if (fan_speed_change_requests[CoolingLine::TYPE_OVERHANG_FAN_START]){
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, overhang_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = overhang_fan_speed;
-            } else if (fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START]){ // ORCA: Add support for separate internal bridge fan speed control
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, internal_bridge_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = internal_bridge_fan_speed;
-            }
-            else if (fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START]){
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, supp_interface_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = supp_interface_fan_speed;
-            }
-            else if (fan_speed_change_requests[CoolingLine::TYPE_IRONING_FAN_START]){
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, ironing_fan_speed, part_cooling_fan_min_pwm);
-                m_current_fan_speed = ironing_fan_speed;
-            }
-            else if(fan_speed_change_requests[CoolingLine::TYPE_FORCE_RESUME_FAN] && m_current_fan_speed != -1){
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, m_current_fan_speed, part_cooling_fan_min_pwm);
+            // role-specific cooling.
+            if (fan_speed_change_requests[CoolingLine::TYPE_FILAMENT_MODIFIER_FAN_START])
+                emit_fan(filament_modifier_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_WAVE_OVERHANG_FAN_START])
+                emit_fan(wave_overhang_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_OVERHANG_FAN_START])
+                emit_fan(overhang_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_INTERNAL_BRIDGE_FAN_START])
+                emit_fan(internal_bridge_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_SUPPORT_INTERFACE_FAN_START])
+                emit_fan(supp_interface_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_IRONING_FAN_START])
+                emit_fan(ironing_fan_speed);
+            else if (fan_speed_change_requests[CoolingLine::TYPE_FORCE_RESUME_FAN] && m_current_fan_speed != -1) {
+                emit_fan(m_current_fan_speed);
                 fan_speed_change_requests[CoolingLine::TYPE_FORCE_RESUME_FAN] = false;
+            } else {
+                emit_fan(m_fan_speed);
             }
-            else
-                new_gcode += GCodeWriter::set_fan(m_config.gcode_flavor, m_fan_speed, part_cooling_fan_min_pwm);
             need_set_fan = false;
         }
         pos = line_end;

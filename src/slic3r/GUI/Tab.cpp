@@ -3865,7 +3865,7 @@ void TabPrintPart::notify_changed(ObjectBase * object)
 }
 
 TabFilamentModifier::TabFilamentModifier(ParamsPanel* parent) :
-    TabPrintModel(parent, { "modifier_nozzle_temperature", "modifier_max_volumetric_speed", "modifier_pressure_advance", "print_flow_ratio", "modifier_fan_speed", "modifier_aux_fan_speed" })
+    TabPrintModel(parent, { "filament_modifier_scope", "modifier_nozzle_temperature", "modifier_max_volumetric_speed", "modifier_pressure_advance", "print_flow_ratio", "modifier_fan_speed", "modifier_aux_fan_speed" })
 {
     m_parent_tab = wxGetApp().get_model_tab();
 }
@@ -3885,7 +3885,9 @@ void TabFilamentModifier::build()
     // Orca: mirror the material tab layout (see TabFilament::build) but bound to the per-region
     // modifier_* keys, so a filament modifier volume exposes only filament-relevant settings.
     auto filament_page = add_options_page(L("Filament"), "empty");
-        auto optgroup = filament_page->new_optgroup(L("Print temperature"));
+        auto optgroup = filament_page->new_optgroup(L("Scope"));
+            optgroup->append_single_option_line("filament_modifier_scope");
+        optgroup = filament_page->new_optgroup(L("Print temperature"));
             optgroup->append_single_option_line("modifier_nozzle_temperature");
         optgroup = filament_page->new_optgroup(L("Flow ratio and Pressure Advance"));
             optgroup->append_single_option_line("print_flow_ratio");

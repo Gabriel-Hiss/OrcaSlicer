@@ -3,7 +3,13 @@ project(OrcaSlicer-native)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    if (CMAKE_BUILD_TYPE STREQUAL "Release")
+        add_compile_options(/Zi /Z7 /clang:-O2 /clang:-flto=full)
+    elseif (CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+        add_compile_options(/Zi /Z7 /clang:-O2)
+    endif()
+endif()
 # Include dev-utils for encoding check and other utilities
 add_subdirectory(dev-utils)
 # add_subdirectory(avrdude)

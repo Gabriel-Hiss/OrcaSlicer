@@ -17,6 +17,14 @@ on:
           required: false
           type: boolean
           default: false
+        orca-cache-init:
+          required: false
+          type: string
+          default: ''
+        use-ninja:
+          required: false
+          type: boolean
+          default: false
 
 jobs:
   build_orca:
@@ -29,6 +37,11 @@ jobs:
       ubuntu-ver: '2404'
       ubuntu-ver-str: '_Ubuntu2404'
       ORCA_UPDATER_SIG_KEY: ${{ secrets.ORCA_UPDATER_SIG_KEY }}
+      # Honored by build_linux.sh, build_release_macos.sh and build_release_vs.bat.
+      ORCA_EXTRA_BUILD_ARGS: ${{ inputs.orca-cache-init && format('-C {0}/{1}', github.workspace, inputs.orca-cache-init) || '' }}
+      # A variant build validates a toolchain; it does not feed the unit test jobs,
+      # the universal macOS bundle or the nightly release.
+      is_variant: ${{ inputs.orca-cache-init != '' }}
       # Branches whose builds are published to the nightly release. The
       # belt-printer branch ships alongside main but its assets carry a `_belt`
       # suffix (nightly_suffix) so they never overwrite the main nightly assets.
@@ -83,7 +96,9 @@ jobs:
             ver=V$ver_pure
             git_commit_hash=""
           fi
-          echo "ver=$ver" >> $GITHUB_ENV
+          # A variant build (clang LTO, for one) tags every artifact and asset name
+          # through ver, so it never collides with the default build in the same run.
+          echo "ver=$ver${{ inputs.orca-cache-init && '_lto' || '' }}" >> $GITHUB_ENV
           echo "ver_pure=$ver_pure" >> $GITHUB_ENV
           echo "date=$(date +'%Y%m%d')" >> $GITHUB_ENV
           echo "git_commit_hash=$git_commit_hash" >> $GITHUB_ENV
@@ -114,6 +129,7 @@ jobs:
               $git_commit_hash = ""
           }
 
+          $ver = "$ver" + "${{ inputs.orca-cache-init && '_lto' || '' }}"
           echo "ver=$ver" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           echo "date=$date" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
           echo "git_commit_hash=$git_commit_hash" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
@@ -141,11 +157,12 @@ jobs:
       - name: Build slicer mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only
         working-directory: ${{ github.workspace }}
-        # arm64 only: build the tests here; the unit_tests_macos job runs them.
+        # arm64 only: build the tests here; the unit_tests_macos job runs them. A
+        # variant build does not feed that job, so it skips them.
         env:
           ORCA_TESTS_BUILD_ONLY: ${{ inputs.arch == 'arm64' && '1' || '' }}
         run: |
-          ./build_release_macos.sh -s -n -x ${{ !vars.SELF_HOSTED && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ inputs.arch == 'arm64' && '-T' || '' }}
+          ./build_release_macos.sh -s -n -x ${{ !vars.SELF_HOSTED && '-1' || '' }} -a ${{ inputs.arch }} -t 10.15 ${{ (inputs.arch == 'arm64' && inputs.orca-cache-init == '') && '-T' || '' }}
 
       - name: Pack unit tests mac
         if: runner.os == 'macOS' && !inputs.macos-combine-only && inputs.arch == 'arm64'
@@ -153,7 +170,7 @@ jobs:
         run: tar -cvf build_tests.tar build/arm64/tests
 
       - name: Upload Test Artifact mac
-        if: runner.os == 'macOS' && !inputs.macos-combine-only && inputs.arch == 'arm64'
+        if: runner.os == 'macOS' && !inputs.macos-combine-only && inputs.arch == 'arm64' && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-tests-macos-arm64
@@ -177,7 +194,7 @@ jobs:
           tar -czvf OrcaSlicer_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}.tar.gz -C build/${{ inputs.arch }} OrcaSlicer
 
       - name: Upload macOS app bundle ${{ inputs.arch }}
-        if: runner.os == 'macOS' && !inputs.macos-combine-only
+        if: runner.os == 'macOS' && !inputs.macos-combine-only && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_Mac_bundle_${{ inputs.arch }}_${{ github.sha }}
@@ -341,7 +358,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Deploy Mac release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -352,7 +369,7 @@ jobs:
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
 
       - name: Deploy Mac OrcaSlicer_profile_validator DMG release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'macOS' && inputs.macos-combine-only && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -379,6 +396,14 @@ jobs:
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v3
 
+      # The Ninja generator does not set up the MSVC environment on its own, which
+      # clang-cl needs.
+      - name: setup MSVC dev cmd
+        if: runner.os == 'Windows' && inputs.use-ninja
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ inputs.arch || 'x64' }}
+
       - name: Install nsis
         if: runner.os == 'Windows' && !vars.SELF_HOSTED
         run: |
@@ -393,9 +418,15 @@ jobs:
         #   WindowsSdkDir: 'C:\Program Files (x86)\Windows Kits\10\'
         #   WindowsSDKVersion: '10.0.26100.0\'
         # "tests" builds the unit tests too; the unit_tests_windows_* jobs run them.
+        # A variant build does not feed those jobs, and every test binary would pay
+        # the LTO link, so it skips them.
         run: |
-          $arch = "${{ inputs.arch }}"
-          if ($arch -eq "arm64") { .\build_release_vs.bat slicer arm64 tests } else { .\build_release_vs.bat slicer tests }
+          $buildArgs = @("slicer")
+          if ("${{ inputs.arch }}" -eq "arm64") { $buildArgs += "arm64" }
+          if ("${{ env.is_variant }}" -ne "true") { $buildArgs += "tests" }
+          if ("${{ inputs.use-ninja }}" -eq "true") { $buildArgs += "-x" }
+          & .\build_release_vs.bat @buildArgs
+          if ($LASTEXITCODE -ne 0) { throw "build_release_vs.bat $buildArgs failed with $LASTEXITCODE" }
         shell: pwsh
 
       - name: Build system preset cache (Windows)
@@ -412,7 +443,7 @@ jobs:
         run: tar -cvf build_tests.tar ${{ env.BUILD_DIR }}/tests
 
       - name: Upload Test Artifact Win
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-tests-windows-${{ inputs.arch }}
@@ -456,21 +487,21 @@ jobs:
           path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/OrcaSlicer*.exe
 
       - name: Upload artifacts Win PDB
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: PDB
           path: ${{ github.workspace }}/build/src/Release/Debug_PDB_${{ env.ver }}_for_developers_only.7z
 
       - name: Upload OrcaSlicer_profile_validator Win
-        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Windows_${{ env.ver }}
           path: ${{ github.workspace }}/build/src/Release/OrcaSlicer_profile_validator.exe
 
       - name: Deploy Windows release portable
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -481,7 +512,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows release installer
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && env.deploy_nightly == 'true' && runner.os == 'Windows' && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -492,7 +523,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy Windows OrcaSlicer_profile_validator release
-        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED
+        if: github.repository == 'OrcaSlicer/OrcaSlicer' && github.ref == 'refs/heads/main' && runner.os == 'Windows' && inputs.arch != 'arm64' && !vars.SELF_HOSTED && env.is_variant != 'true'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -534,18 +565,25 @@ jobs:
         shell: bash
         run: |
           # Build + tar the unit tests (-t) on both Linux legs so each arch
-          # (x86_64 + aarch64) gets tested by its own unit_tests_linux_* job.
-          ./build_linux.sh -istrlL
+          # (x86_64 + aarch64) gets tested by its own unit_tests_linux_* job. A
+          # variant build does not feed those jobs, so it skips them.
+          if [ "${{ env.is_variant }}" = "true" ]; then
+            ./build_linux.sh -isrlL
+          else
+            ./build_linux.sh -istrlL
+          fi
           ./scripts/check_appimage_libs.sh ./build/package ./build/package/bin/orca-slicer
           appimage=./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage
           mv -n ./build/OrcaSlicer_Linux_V${{ env.ver_pure }}.AppImage "$appimage"
           chmod +x "$appimage"
-          tar -cvf build_tests.tar build/tests
+          if [ "${{ env.is_variant }}" != "true" ]; then
+            tar -cvf build_tests.tar build/tests
+          fi
 
         # Use tar because upload-artifacts won't always preserve directory structure
         # and doesn't preserve file permissions
       - name: Upload Test Artifact
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && env.is_variant != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-tests-linux-${{ inputs.arch == 'aarch64' && 'aarch64' || 'x86_64' }}
@@ -573,7 +611,7 @@ jobs:
         # the aarch64 leg so the sweep also exercises the arm build; x86_64 on
         # SELF_HOSTED, which skips arm64.
       - name: Upload profile validator (for slice check)
-        if: ${{ runner.os == 'Linux' && (vars.SELF_HOSTED && inputs.arch != 'aarch64' || !vars.SELF_HOSTED && inputs.arch == 'aarch64') }}
+        if: ${{ runner.os == 'Linux' && (vars.SELF_HOSTED && inputs.arch != 'aarch64' || !vars.SELF_HOSTED && inputs.arch == 'aarch64') && env.is_variant != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ github.sha }}-profile-validator-linux-${{ inputs.arch == 'aarch64' && 'aarch64' || 'x86_64' }}
@@ -609,14 +647,14 @@ jobs:
           path: "./build/OrcaSlicer_Linux_AppImage${{ env.ubuntu-ver-str }}${{ env.arch_suffix }}_${{ env.ver }}.AppImage"
 
       - name: Upload OrcaSlicer_profile_validator Ubuntu
-        if: ${{ ! env.ACT && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ ! env.ACT && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' && env.is_variant != 'true' }}
         uses: actions/upload-artifact@v7
         with:
           name: OrcaSlicer_profile_validator_Linux_ubuntu_${{ env.ubuntu-ver }}_${{ env.ver }}
           path: './build/src/Release/OrcaSlicer_profile_validator'
 
       - name: Deploy Ubuntu release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && env.deploy_nightly == 'true' && runner.os == 'Linux' && !vars.SELF_HOSTED }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && env.deploy_nightly == 'true' && runner.os == 'Linux' && !vars.SELF_HOSTED && env.is_variant != 'true' }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -626,7 +664,7 @@ jobs:
           asset_content_type: application/octet-stream
           max_releases: 1 # optional, if there are more releases than this matching the asset_name, the oldest ones are going to be deleted
       - name: Deploy Ubuntu release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' && env.is_variant != 'true' }}
         uses: rickstaa/action-create-tag@v1
         with:
           tag: "nightly-builds"
@@ -635,7 +673,7 @@ jobs:
           message: "nightly-builds"
 
       - name: Deploy Ubuntu OrcaSlicer_profile_validator release
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' && env.is_variant != 'true' }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}
@@ -646,7 +684,7 @@ jobs:
           max_releases: 1
 
       - name: Deploy orca_custom_preset_tests
-        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' }}
+        if: ${{ github.repository == 'OrcaSlicer/OrcaSlicer' && ! env.ACT && github.ref == 'refs/heads/main' && runner.os == 'Linux' && !vars.SELF_HOSTED && inputs.arch != 'aarch64' && env.is_variant != 'true' }}
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/OrcaSlicer/OrcaSlicer/releases/137995723/assets{?name,label}

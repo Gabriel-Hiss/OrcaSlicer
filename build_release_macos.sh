@@ -156,13 +156,17 @@ function build_deps() {
                 mkdir -p "$DEPS"
                 cd "$DEPS_BUILD_DIR"
                 if [ "1." != "$BUILD_ONLY". ]; then
+                    # DEPS_EXTRA_BUILD_ARGS and ORCA_EXTRA_BUILD_ARGS forward extra
+                    # cmake arguments, the same contract build_linux.sh already honors.
+                    read -r -a _deps_extra_args <<< "${DEPS_EXTRA_BUILD_ARGS:-}"
                     cmake "${DEPS_DIR}" \
                         -G "${DEPS_CMAKE_GENERATOR}" \
                         -DCMAKE_BUILD_TYPE="$BUILD_CONFIG" \
                         -DCMAKE_OSX_ARCHITECTURES:STRING="${_ARCH}" \
                         -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
                         -DCMAKE_IGNORE_PREFIX_PATH="${CMAKE_IGNORE_PREFIX_PATH}" \
-                        ${CMAKE_POLICY_COMPAT}
+                        ${CMAKE_POLICY_COMPAT} \
+                        "${_deps_extra_args[@]}"
                 fi
                 cmake --build . --config "$BUILD_CONFIG" --target deps
             )
@@ -255,6 +259,7 @@ function build_slicer() {
             mkdir -p "$PROJECT_BUILD_DIR"
             cd "$PROJECT_BUILD_DIR"
             if [ "1." != "$BUILD_ONLY". ]; then
+                read -r -a _orca_extra_args <<< "${ORCA_EXTRA_BUILD_ARGS:-}"
                 cmake "${PROJECT_DIR}" \
                     -G "${SLICER_CMAKE_GENERATOR}" \
                     -DORCA_TOOLS=ON \
@@ -264,7 +269,8 @@ function build_slicer() {
                     -DCMAKE_OSX_ARCHITECTURES="${_ARCH}" \
                     -DCMAKE_OSX_DEPLOYMENT_TARGET="${OSX_DEPLOYMENT_TARGET}" \
                     -DCMAKE_IGNORE_PREFIX_PATH="${CMAKE_IGNORE_PREFIX_PATH}" \
-                    ${CMAKE_POLICY_COMPAT}
+                    ${CMAKE_POLICY_COMPAT} \
+                    "${_orca_extra_args[@]}"
             fi
             cmake --build . --config "$BUILD_CONFIG" --target "$SLICER_BUILD_TARGET"
         )

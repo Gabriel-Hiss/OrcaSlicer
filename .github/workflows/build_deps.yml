@@ -22,6 +22,18 @@ on:
       force-build:
         required: false
         type: boolean
+      deps-cache-init:
+        required: false
+        type: string
+        default: ''
+      orca-cache-init:
+        required: false
+        type: string
+        default: ''
+      use-ninja:
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build_deps:
@@ -30,6 +42,8 @@ jobs:
     runs-on: ${{ inputs.os }}
     env:
       date:
+      # Honored by build_linux.sh, build_release_macos.sh and build_release_vs.bat.
+      DEPS_EXTRA_BUILD_ARGS: ${{ inputs.deps-cache-init && format('-C {0}/{1}', github.workspace, inputs.deps-cache-init) || '' }}
     steps:
 
       # Setup the environment
@@ -70,6 +84,14 @@ jobs:
       - name: setup dev on Windows
         if: runner.os == 'Windows'
         uses: microsoft/setup-msbuild@v3
+
+      # The Ninja generator does not set up the MSVC environment on its own, which
+      # clang-cl needs.
+      - name: setup MSVC dev cmd
+        if: runner.os == 'Windows' && inputs.use-ninja
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ inputs.arch || 'x64' }}
 
       - name: Get the date on Ubuntu and macOS
         if: runner.os != 'Windows'
@@ -134,14 +156,19 @@ jobs:
             if (-not "${{ vars.SELF_HOSTED }}") {
               choco install strawberryperl
             }
-            $arch = "${{ inputs.arch }}"
-            if ($arch -eq "arm64") {
-              .\build_release_vs.bat deps arm64
-              .\build_release_vs.bat pack arm64
-            } else {
-              .\build_release_vs.bat deps
-              .\build_release_vs.bat pack
+            # build_release_vs.bat does not check the exit code of cmake --build, so a
+            # dependency that fails to configure leaves a partial tree behind and the
+            # step still looks green. Check it here.
+            function Invoke-Build([string[]]$ScriptArgs) {
+              & .\build_release_vs.bat @ScriptArgs
+              if ($LASTEXITCODE -ne 0) { throw "build_release_vs.bat $ScriptArgs failed with $LASTEXITCODE" }
             }
+            $buildArgs = @("deps")
+            $packArgs = @("pack")
+            if ("${{ inputs.arch }}" -eq "arm64") { $buildArgs += "arm64"; $packArgs += "arm64" }
+            if ("${{ inputs.use-ninja }}" -eq "true") { $buildArgs += "-x" }
+            Invoke-Build $buildArgs
+            Invoke-Build $packArgs
         shell: pwsh
 
       - name: Build on Mac ${{ inputs.arch }}
@@ -204,4 +231,6 @@ jobs:
       cache-path: ${{ inputs.cache-path }}
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
+      orca-cache-init: ${{ inputs.orca-cache-init }}
+      use-ninja: ${{ inputs.use-ninja }}
     secrets: inherit

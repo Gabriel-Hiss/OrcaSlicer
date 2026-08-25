@@ -131,12 +131,21 @@ echo "building deps.."
 echo on
 REM Set minimum CMake policy to avoid <3.5 errors
 set CMAKE_POLICY_VERSION_MINIMUM=3.5
+REM DEPS_EXTRA_BUILD_ARGS and ORCA_EXTRA_BUILD_ARGS forward extra cmake arguments,
+REM the same contract build_linux.sh already honors.
+REM Every cmake call below is checked: without this the script reaches :done and
+REM exits 0 even when the build stopped, which reads as a successful dependency
+REM tree to anything calling it, CI included.
 if "%USE_NINJA%"=="1" (
-    cmake ../ -G %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake ../ -G %CMAKE_GENERATOR% -DCMAKE_BUILD_TYPE=%build_type% %DEPS_EXTRA_BUILD_ARGS%
+    if errorlevel 1 exit /b 1
     cmake --build . --config %build_type% --target deps
+    if errorlevel 1 exit /b 1
 ) else (
-    cmake ../ -G %CMAKE_GENERATOR% -A %arch% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake ../ -G %CMAKE_GENERATOR% -A %arch% -DCMAKE_BUILD_TYPE=%build_type% %DEPS_EXTRA_BUILD_ARGS%
+    if errorlevel 1 exit /b 1
     cmake --build . --config %build_type% --target deps -- -m
+    if errorlevel 1 exit /b 1
 )
 @echo off
 
@@ -151,17 +160,22 @@ cd %build_dir%
 echo on
 set CMAKE_POLICY_VERSION_MINIMUM=3.5
 if "%USE_NINJA%"=="1" (
-    cmake .. -G %CMAKE_GENERATOR% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake .. -G %CMAKE_GENERATOR% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type% %ORCA_EXTRA_BUILD_ARGS%
+    if errorlevel 1 exit /b 1
     cmake --build . --config %build_type% --target all
+    if errorlevel 1 exit /b 1
 ) else (
-    cmake .. -G %CMAKE_GENERATOR% -A %arch% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type%
+    cmake .. -G %CMAKE_GENERATOR% -A %arch% -DORCA_TOOLS=ON %SIG_FLAG% -DBUILD_TESTS=%BUILD_TESTS% -DCMAKE_BUILD_TYPE=%build_type% %ORCA_EXTRA_BUILD_ARGS%
+    if errorlevel 1 exit /b 1
     cmake --build . --config %build_type% --target ALL_BUILD -- -m
+    if errorlevel 1 exit /b 1
 )
 @echo off
 cd ..
 call scripts/run_gettext.bat
 cd %build_dir%
 cmake --build . --target install --config %build_type%
+if errorlevel 1 exit /b 1
 
 :done
 @echo off

@@ -20,15 +20,26 @@ if (MSVC)
 else ()
     set(_wx_edge "-DwxUSE_WEBVIEW_EDGE=OFF")
 endif ()
-
+set(_wx_winrt "")
+if (WIN32 AND MSVC)
+    file(GLOB _wx_winrt_include LIST_DIRECTORIES true
+        "$ENV{ProgramFiles\(x86\)}/Windows Kits/10/Include/*/winrt")
+    list(SORT _wx_winrt_include COMPARE NATURAL ORDER DESCENDING)
+    if (_wx_winrt_include)
+        list(GET _wx_winrt_include 0 _wx_winrt_include)
+        set(_wx_winrt "-DCMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES:PATH=${_wx_winrt_include}")
+    endif ()
+endif ()
 orcaslicer_add_cmake_project(
     wxWidgets
     GIT_REPOSITORY "https://github.com/SoftFever/Orca-deps-wxWidgets"
     GIT_TAG v3.3.2
     GIT_SHALLOW ON
+    UPDATE_DISCONNECTED TRUE
     GIT_SUBMODULES 3rdparty/catch 3rdparty/pcre 3rdparty/libwebp
     DEPENDS ${PNG_PKG} ${ZLIB_PKG} ${EXPAT_PKG} ${JPEG_PKG}
     CMAKE_ARGS
+        ${_wx_winrt}
         -DwxBUILD_PRECOMP=ON
         ${_wx_toolkit}
         "-DCMAKE_DEBUG_POSTFIX:STRING=${_wx_debug_postfix}"

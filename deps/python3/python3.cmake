@@ -1,6 +1,4 @@
 
-include(ProcessorCount)
-ProcessorCount(NPROC)
 
 set(_python_version "3.12.13")
 string(REGEX REPLACE "^([0-9]+\\.[0-9]+)\\..*" "\\1" _python_version_short "${_python_version}")
@@ -93,6 +91,7 @@ if(WIN32)
         cmd /c PCbuild\\build.bat
             -p ${_python_pcbuild_platform}
             -c ${_python_pcbuild_config}
+            -M
             --no-tkinter
     )
     set(_install_cmd
@@ -163,7 +162,7 @@ elseif(APPLE)
                  --without-static-libpython \
                  --disable-test-modules \
                  --build=${_python_build_arch}-apple-darwin && \
-             make -j${NPROC} python && \
+             make -j${DEPS_BUILD_JOBS} python && \
              cd '<SOURCE_DIR>' && \
              env \
                CC='${CMAKE_C_COMPILER}' \
@@ -206,7 +205,7 @@ elseif(APPLE)
             py_cv_module__tkinter=n/a
         )
     endif()
-    set(_build_cmd make -j${NPROC})
+    set(_build_cmd make -j${DEPS_BUILD_JOBS})
 
     # CPython stamps libpython with an absolute install name ($prefix/lib/...),
     # which every consumer inherits at link time and which only exists on the
@@ -250,7 +249,7 @@ else()
         py_cv_module__tkinter=n/a
         LDFLAGS=-Wl,-rpath,${_python_prefix}/lib
     )
-    set(_build_cmd make -j${NPROC})
+    set(_build_cmd make -j${DEPS_BUILD_JOBS})
     set(_install_cmd make install
         COMMAND ${CMAKE_COMMAND}
             "-DPYTHON_BIN=${_python_prefix}/bin/python${_python_version_short}"

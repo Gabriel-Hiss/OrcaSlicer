@@ -1,6 +1,4 @@
 
-include(ProcessorCount)
-ProcessorCount(NPROC)
 
 if(DEFINED OPENSSL_ARCH)
     set(_cross_arch ${OPENSSL_ARCH})
@@ -38,8 +36,8 @@ else()
         set(_conf_cmd env "CC=${CMAKE_C_COMPILER}" "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}" "./config")
     endif()
     set(_cross_comp_prefix_line "")
-    set(_make_cmd make -j${NPROC})
-    set(_install_cmd make -j${NPROC} install_sw)
+    set(_make_cmd make -j${DEPS_BUILD_JOBS})
+    set(_install_cmd make -j${DEPS_BUILD_JOBS} install_sw)
     if (CMAKE_CROSSCOMPILING)
         set(_cross_comp_prefix_line "--cross-compile-prefix=${TOOLCHAIN_PREFIX}-")
 

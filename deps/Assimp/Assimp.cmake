@@ -33,6 +33,7 @@ orcaslicer_add_cmake_project(Assimp
         ${_assimp_build_zlib}
         -DASSIMP_WARNINGS_AS_ERRORS=OFF
         -DBUILD_WITH_STATIC_CRT=OFF
+        -DASSIMP_BUILD_USE_CCACHE=OFF
 )
 
 if (MSVC)

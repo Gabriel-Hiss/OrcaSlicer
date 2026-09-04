@@ -9,16 +9,13 @@
 
 namespace Slic3r {
 
-// Run post-processing scripts (the "post_process" option) and/or the slicing-pipeline plugins'
-// Step.psGCodePostProcess seam (the "slicing_pipeline_plugin" option) if defined. Lives in the GUI
-// layer because plugins are executed through the embedded-Python PluginManager, which libslic3r must
-// not depend on.
-// Returns true if a script or plugin was executed.
-// Returns false if neither a post-processing script nor plugin was defined.
+// Run post-processing scripts (the "post_process" option) if defined.
+// Returns true if a script was executed.
+// Returns false if no post-processing script was defined.
 // Throws an exception on error.
 // host is one of "File", "PrusaLink", "Repetier", "SL1Host", "OctoPrint", "FlashAir", "Duet", "AstroBox" ...
 // If make_copy, then a temp file will be created for src_path by adding a ".pp" suffix and src_path will be updated.
-// In that case the caller is responsible to delete the temp file created. Scripts and plugins always
+// In that case the caller is responsible to delete the temp file created. Scripts always
 // run on this working copy so they never touch the original G-code the viewer keeps memory-mapped
 // (a writable open of the mapped file fails on Windows with a sharing violation).
 // output_name is the final name of the G-code on SD card or when uploaded to PrusaLink or OctoPrint.

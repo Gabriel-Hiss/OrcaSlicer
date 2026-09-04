@@ -179,16 +179,9 @@ enum class NotificationType
     OrcaSharedProfilesAvailable,
 	OrcaCloudAPIError,
     OrcaSyncConflict,
-    // Active preset requires plugin capabilities that are not installed/loadable. Persistent,
-    // non-modal; offers install (cloud) / OrcaCloud search (local) and blocks slicing.
     OrcaLocalPluginMissingError,
     OrcaCloudPluginMissingError,
-    // Active preset references capabilities that are installed but not active (plugin not loaded, or
-    // capability disabled). Resolved locally by activating them; persistent, blocks slicing.
     OrcaPluginInactiveError,
-    // Active preset references a capability the installed+loaded plugin does not provide (outdated
-    // plugin). Informational; cannot be auto-resolved; persistent, blocks slicing.
-    OrcaPluginCapabilityUnavailableError,
     NotificationTypeCount
 
 };
@@ -956,11 +949,11 @@ private:
 		int conflict_code;
 	};
 
-	// Persistent, non-closable notification for preset plugin capabilities that are required but
-	// unavailable. Offers per-capability "Jump to" links and a single resolve action; it stays up
-	// until every missing plugin is resolved.
-	class PluginMissingNotification : public PopNotification
-	{
+    // Persistent, non-closable notification for required preset plugins that are
+    // unavailable. Offers "Jump to" links and a single resolve action; it stays up
+    // until every missing plugin is resolved.
+    class PluginMissingNotification : public PopNotification
+    {
 	public:
 		PluginMissingNotification(const NotificationData& n, NotificationIDProvider& id_provider, wxEvtHandler* evt_handler,
 			std::string resolve_label,

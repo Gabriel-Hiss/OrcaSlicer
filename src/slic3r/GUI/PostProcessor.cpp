@@ -5,12 +5,7 @@
 #include "libslic3r_version.h"
 #include "I18N.hpp"
 
-// Post-processing plugins are executed through the embedded-Python plugin system, which is why this
-// file lives in the GUI layer (libslic3r must not depend on pybind11 / PluginManager).
 #include "libslic3r/Config.hpp"
-#include "slic3r/plugin/PluginManager.hpp"
-#include "slic3r/plugin/pluginTypes/slicingPipeline/SlicingPipelinePluginCapability.hpp"
-#include "slic3r/plugin/PythonInterpreter.hpp"
 
 #include <boost/algorithm/string.hpp>
 #include <boost/log/trivial.hpp>
@@ -24,7 +19,6 @@
 #include <algorithm>
 #include <iostream>
 #include <fstream>
-#include <slic3r/plugin/PythonPluginInterface.hpp>
 
 #ifdef WIN32
 
@@ -241,81 +235,12 @@ void gcode_add_line_number(const std::string& path, const DynamicPrintConfig& co
     fs.close();
 }
 
-// Run the configured slicing-pipeline plugins on `gcode_path` in place, at their Step.psGCodePostProcess
-// seam. This is the same capability that runs at the geometry seams inside Print::process(); here it is
-// dispatched a final time on the exported G-code, so a plugin can edit slices AND the final G-code from
-// one class. Plugins are executed in-process through the embedded Python interpreter. Throws
-// Slic3r::RuntimeError on any failure; the caller removes the working copy (see run_post_process_scripts'
-// catch block). Entries are bare capability names; the top-level plugins manifest carries the full refs.
-// A geometry-only plugin simply returns success here (it filters on ctx.step), so it costs nothing beyond
-// one no-op call, but note any configured pipeline plugin still engages this post-process path (i.e. the
-// non-BBL ".pp" working copy) even if it does no G-code work.
-static void run_post_process_plugins(const ConfigOptionStrings& capabilities,
-                                     const ConfigOptionStrings* plugins,
-                                     const std::string& gcode_path,
-                                     const std::string& host,
-                                     const std::string& output_name,
-                                     const DynamicPrintConfig& config)
-{
-    // Let plugins observe the (possibly script-updated) target file name, mirroring the script env.
-    boost::nowide::setenv("SLIC3R_PP_OUTPUT_NAME", output_name.c_str(), 1);
-
-    const boost::filesystem::path gcode_file(gcode_path);
-
-    auto execute_fn = [&](std::shared_ptr<SlicingPipelinePluginCapability> cap, const PluginCapabilityRef& ref) {
-        SlicingPipelineContext ctx;
-        ctx.orca_version = SoftFever_VERSION;
-        ctx.step         = SlicingPipelineStepPlugin::psGCodePostProcess;
-        ctx.gcode_path   = gcode_path;
-        ctx.host         = host;
-        ctx.output_name  = output_name;
-        ctx.full_config  = &config;   // no live Print here; config_value() reads this
-
-        ExecutionResult exec_result;
-        try {
-            PythonGILState gil;
-            exec_result = cap->execute(ctx);
-        } catch (const std::exception& ex) {
-            const std::string msg =
-                (boost::format("Post-processing plugin %1% raised an exception.\nError: %2%") % ref.capability_name % ex.what()).str();
-            BOOST_LOG_TRIVIAL(error) << msg;
-            throw Slic3r::RuntimeError(msg);
-        }
-
-        if (exec_result.status == PluginResult::RecoverableError || exec_result.status == PluginResult::FatalError) {
-            const std::string msg =
-                (boost::format("Post-processing plugin %1% failed.\nError: %2%") % ref.capability_name % exec_result.message).str();
-            BOOST_LOG_TRIVIAL(error) << msg;
-            throw Slic3r::RuntimeError(msg);
-        }
-
-        if (!exec_result.message.empty())
-            BOOST_LOG_TRIVIAL(info) << "Post-processing plugin " << ref.capability_name << ": " << exec_result.message;
-
-        if (!boost::filesystem::exists(gcode_file)) {
-            const std::string msg = (boost::format(
-                                         _utf8(L("Post-processing plugin %1% failed.\n\n"
-                                                 "The post-processing plugin is expected to modify the G-code file %2% in place, but "
-                                                 "the G-code file was deleted.\nPlease check the plugin implementation.\n"))) %
-                                     ref.capability_name % gcode_path)
-                                        .str();
-            BOOST_LOG_TRIVIAL(error) << msg;
-            throw Slic3r::RuntimeError(msg);
-        }
-
-        BOOST_LOG_TRIVIAL(info) << "Post-processing plugin " << ref.capability_name << " completed successfully";
-    };
-
-    execute_capabilities_from_refs<SlicingPipelinePluginCapability>(capabilities, plugins, PluginCapabilityType::SlicingPipeline, execute_fn);
-}
-
-// Run post-processing scripts ("post_process") and/or the slicing-pipeline plugins' psGCodePostProcess
-// step ("slicing_pipeline_plugin") if defined. Both run on the same working copy of the G-code (the
-// ".pp" temp when make_copy), so a
-// plugin never opens the original file the G-code viewer keeps memory-mapped (a writable open of the
-// mapped file fails on Windows with a sharing violation).
-// Returns true if a script or plugin was executed.
-// Returns false if neither a post-processing script nor plugin was defined.
+// Run post-processing scripts ("post_process") if defined. Runs on the same
+// working copy of the G-code (the ".pp" temp when make_copy), so a
+// script never opens the original file the G-code viewer keeps memory-mapped
+// (a writable open of the mapped file fails on Windows with a sharing violation).
+// Returns true if a script was executed.
+// Returns false if no post-processing script was defined.
 // Throws an exception on error.
 // host is one of "File", "PrusaLink", "Repetier", "SL1Host", "OctoPrint", "FlashAir", "Duet", "AstroBox" ...
 // For a "File" target, a temp file will be created for src_path by adding a ".pp" suffix and src_path will be updated.
@@ -326,19 +251,15 @@ static void run_post_process_plugins(const ConfigOptionStrings& capabilities,
 bool run_post_process_scripts(
     std::string& src_path, bool make_copy, const std::string& host, std::string& output_name, const DynamicPrintConfig& config)
 {
-    // post_process / slicing_pipeline_plugin are absent in SLA mode, hence the null checks. G-code
-    // post-processing is now the psGCodePostProcess step of the slicing-pipeline plugin, so the same
-    // slicing_pipeline_plugin option drives both the geometry seams and this final G-code seam.
-    const auto* post_process            = config.opt<ConfigOptionStrings>("post_process");
-    const auto* slicing_pipeline_plugin = config.opt<ConfigOptionStrings>("slicing_pipeline_plugin");
-    const bool  have_scripts            = post_process != nullptr && !post_process->values.empty();
-    const bool  have_plugins            = slicing_pipeline_plugin != nullptr && !slicing_pipeline_plugin->values.empty();
-    if (!have_scripts && !have_plugins)
+    // post_process is absent in SLA mode, hence the null check.
+    const auto* post_process = config.opt<ConfigOptionStrings>("post_process");
+    const bool  have_scripts = post_process != nullptr && !post_process->values.empty();
+    if (!have_scripts)
         return false;
 
     std::string path;
     if (make_copy) {
-        // Don't run the post-processing script/plugin on the input file, it will be memory mapped by the G-code viewer.
+        // Don't run the post-processing script on the input file, it will be memory mapped by the G-code viewer.
         // Make a copy.
         path = src_path + ".pp";
         // First delete an old file if it exists.
@@ -400,43 +321,40 @@ bool run_post_process_scripts(
     remove_output_name_file();
 
     try {
-        if (have_scripts) {
-            for (const std::string& scripts : post_process->values) {
-                std::vector<std::string> lines;
-                boost::split(lines, scripts, boost::is_any_of("\r\n"));
-                for (std::string script : lines) {
-                    // Ignore empty post processing script lines.
-                    boost::trim(script);
-                    if (script.empty())
-                        continue;
-                    BOOST_LOG_TRIVIAL(info) << "Executing script " << script << " on file " << path;
-                    std::string std_err;
-                    const int result = run_script(script, gcode_file.string(), std_err);
-                    if (result != 0) {
-                        const std::string msg = std_err.empty() ?
-                                                    (boost::format("Post-processing script %1% on file %2% failed.\nError code: %3%") %
-                                                     script % path % result)
-                                                        .str() :
-                                                    (boost::format(
-                                                         "Post-processing script %1% on file %2% failed.\nError code: %3%\nOutput:\n%4%") %
-                                                     script % path % result % std_err)
-                                                        .str();
-                        BOOST_LOG_TRIVIAL(error) << msg;
-                        delete_copy();
-                        throw Slic3r::RuntimeError(msg);
-                    }
-                    if (!boost::filesystem::exists(gcode_file)) {
-                        const std::string msg = (boost::format(
-                                                     _utf8(L("Post-processing script %1% failed.\n\n"
-                                                         "The post-processing script is expected to change the G-code file %2% in place, but "
-                                                         "the G-code file was deleted and likely saved under a new name.\n"
-                                                         "Please adjust the post-processing script to change the G-code in place and consult "
-                                                         "the manual on how to optionally rename the post-processed G-code file.\n"))) %
-                                                 script % path)
+        for (const std::string& scripts : post_process->values) {
+            std::vector<std::string> lines;
+            boost::split(lines, scripts, boost::is_any_of("\r\n"));
+            for (std::string script : lines) {
+                boost::trim(script);
+                if (script.empty())
+                    continue;
+                BOOST_LOG_TRIVIAL(info) << "Executing script " << script << " on file " << path;
+                std::string std_err;
+                const int result = run_script(script, gcode_file.string(), std_err);
+                if (result != 0) {
+                    const std::string msg = std_err.empty() ?
+                                                (boost::format("Post-processing script %1% on file %2% failed.\nError code: %3%") %
+                                                 script % path % result)
+                                                    .str() :
+                                                (boost::format(
+                                                     "Post-processing script %1% on file %2% failed.\nError code: %3%\nOutput:\n%4%") %
+                                                 script % path % result % std_err)
                                                     .str();
-                        BOOST_LOG_TRIVIAL(error) << msg;
-                        throw Slic3r::RuntimeError(msg);
-                    }
+                    BOOST_LOG_TRIVIAL(error) << msg;
+                    delete_copy();
+                    throw Slic3r::RuntimeError(msg);
+                }
+                if (!boost::filesystem::exists(gcode_file)) {
+                    const std::string msg = (boost::format(
+                                                 _utf8(L("Post-processing script %1% failed.\n\n"
+                                                     "The post-processing script is expected to change the G-code file %2% in place, but "
+                                                     "the G-code file was deleted and likely saved under a new name.\n"
+                                                     "Please adjust the post-processing script to change the G-code in place and consult "
+                                                     "the manual on how to optionally rename the post-processed G-code file.\n"))) %
+                                             script % path)
+                                                .str();
+                    BOOST_LOG_TRIVIAL(error) << msg;
+                    throw Slic3r::RuntimeError(msg);
                 }
             }
         }
@@ -477,11 +395,6 @@ bool run_post_process_scripts(
             remove_output_name_file();
         }
 
-        // Run plugins after the scripts so they observe any output_name the scripts produced. A thrown
-        // exception is handled by the catch below, which removes the temp copy.
-        if (have_plugins) {
-            run_post_process_plugins(*slicing_pipeline_plugin, config.opt<ConfigOptionStrings>("plugins"), path, host, output_name, config);
-        }
     } catch (...) {
         remove_output_name_file();
         delete_copy();

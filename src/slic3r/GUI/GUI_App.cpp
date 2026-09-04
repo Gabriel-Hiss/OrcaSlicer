@@ -14,7 +14,6 @@
 #include <boost/log/detail/native_typeof.hpp>
 #include <libslic3r/Config.hpp>
 #include <mutex>
-#include <slic3r/plugin/PythonPluginInterface.hpp>
 #include <wx/event.h>
 
 // Localization headers: include libslic3r version first so everything in this file
@@ -79,8 +78,6 @@
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/Color.hpp"
 #include "slic3r/plugin/PluginManager.hpp"
-#include "slic3r/plugin/host/PluginHostUi.hpp"
-#include "slic3r/plugin/PythonInterpreter.hpp"
 
 #include "GUI.hpp"
 #include "GUI_Utils.hpp"
@@ -142,8 +139,6 @@
 #include "slic3r/Utils/bambu_networking.hpp"
 
 #include "PluginsDialog.hpp"
-#include "SpeedDialDialog.hpp"
-#include "TerminalDialog.hpp"
 
 //#ifdef WIN32
 //#include "BaseException.h"
@@ -2346,7 +2341,6 @@ GUI_App::~GUI_App()
     NetworkAgentFactory::clear_printer_agent_cache();
 
     Slic3r::PluginManager::instance().shutdown();
-    Slic3r::PythonInterpreter::instance().shutdown();
 
     if (app_config != nullptr) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__<< boost::format(": destroy app_config");
@@ -2796,98 +2790,17 @@ void GUI_App::init_plugin_gui_wiring()
     auto refresh_plugins_dialog = [] {
         if (!wxTheApp)
             return;
-
         GUI_App* app = &GUI::wxGetApp();
         if (app->is_closing())
             return;
-
         app->CallAfter([app] {
             if (!app->is_closing() && app->m_plugins_dlg)
                 app->m_plugins_dlg->update_plugin_dialog_ui();
         });
     };
 
-    // why: a newly loaded plugin only adds a selectable agent
-    // refresh the dropdown and leave the live agent alone
-    auto refresh_printer_agent_dropdown_after_load = [](const std::string&)
-    {
-        if (!wxTheApp)
-            return;
-
-        GUI_App* app = &GUI::wxGetApp();
-        if (app->is_closing())
-            return;
-
-        app->CallAfter([app]
-        {
-            if (!app->is_closing())
-                app->refresh_printer_agent_dropdown();
-        });
-    };
-
-    // why: the unloaded plugin may have been the provider of the live agent
-    // re-run selection, where a now-missing agent will be cleared
-    // refresh dropdown after
-    auto switch_printer_agent_after_unload = [](const std::string&)
-    {
-        if (!wxTheApp)
-            return;
-
-        GUI_App* app = &GUI::wxGetApp();
-        if (app->is_closing())
-            return;
-
-        app->CallAfter([app] {
-            if (app->is_closing())
-                return;
-
-            app->switch_printer_agent();
-            app->refresh_printer_agent_dropdown();
-        });
-    };
-
-    plugin_mgr.subscribe_on_unload_callback(PluginHostUi::close_windows_for_plugin);
     plugin_mgr.subscribe_on_load_callback([refresh_plugins_dialog](const std::string&) { refresh_plugins_dialog(); });
     plugin_mgr.subscribe_on_unload_callback([refresh_plugins_dialog](const std::string&) { refresh_plugins_dialog(); });
-    plugin_mgr.subscribe_on_load_callback(NetworkAgentFactory::register_python_plugin);
-    plugin_mgr.subscribe_on_unload_callback(NetworkAgentFactory::deregister_python_plugin);
-    plugin_mgr.subscribe_on_load_callback([](const std::string& plugin_key) {
-        if (wxTheApp == nullptr || wxGetApp().is_closing() || wxGetApp().mainframe == nullptr)
-            return;
-        wxGetApp().mainframe->plugin_pages().on_plugin_register(plugin_key);
-    });
-    plugin_mgr.subscribe_on_unload_callback([](const std::string& plugin_key) {
-        if (wxTheApp == nullptr || wxGetApp().is_closing() || wxGetApp().mainframe == nullptr)
-            return;
-        wxGetApp().mainframe->plugin_pages().on_plugin_deregister(plugin_key);
-    });
-    plugin_mgr.subscribe_on_load_callback(refresh_printer_agent_dropdown_after_load);
-    plugin_mgr.subscribe_on_unload_callback(switch_printer_agent_after_unload);
-    plugin_mgr.subscribe_on_capability_load_callback(
-        [refresh_plugins_dialog, refresh_printer_agent_dropdown_after_load](const PluginCapabilityId& capability) {
-            if (capability.type == PluginCapabilityType::PrinterConnection)
-                NetworkAgentFactory::register_python_printer_agent(capability.plugin_key, capability.name);
-            refresh_plugins_dialog();
-            refresh_printer_agent_dropdown_after_load(capability.plugin_key);
-            // A newly loaded capability may satisfy a missing-plugin notification; re-validate the
-            // current plate (on the UI thread) so the notification clears once its plugin is available.
-            if (wxTheApp && !wxGetApp().is_closing())
-                wxGetApp().CallAfter([]() {
-                    if (Plater* plater = wxGetApp().plater())
-                        plater->revalidate_current_plate_if_plugins_missing();
-                });
-            if (capability.type == PluginCapabilityType::Pages && wxTheApp && !wxGetApp().is_closing() && wxGetApp().mainframe)
-                wxGetApp().mainframe->plugin_pages().on_cap_register(capability);
-        });
-    plugin_mgr.subscribe_on_capability_unload_callback(
-        [refresh_plugins_dialog, switch_printer_agent_after_unload](const PluginCapabilityId& capability) {
-            if (capability.type == PluginCapabilityType::PrinterConnection)
-                NetworkAgentFactory::deregister_python_printer_agent(capability.plugin_key, capability.name);
-            if (capability.type == PluginCapabilityType::Pages && wxTheApp && !wxGetApp().is_closing() && wxGetApp().mainframe)
-                wxGetApp().mainframe->plugin_pages().on_cap_deregister(capability);
-            refresh_plugins_dialog();
-            switch_printer_agent_after_unload(capability.plugin_key);
-        });
 }
 
 bool GUI_App::on_init_inner()
@@ -3293,64 +3206,13 @@ bool GUI_App::on_init_inner()
         wxYield();
     }
 
-    // Initialize plugins after network then register on_load callbacks so once the plugin loads finish, it gets registered automatically.
-    // initialize() also installs the libslic3r hooks (capability resolver,
-    // slicing-pipeline dispatcher) via plugin_hooks::install() -- no
-    // per-capability wiring belongs here.
-    PluginManager& plugin_mgr = PluginManager::instance();
-    plugin_mgr.initialize();
-
-    // Set cloud plugin directory from previous session so cloud-installed
-    // plugins are discovered even before the network agent is ready.
-    const std::string preset_folder = app_config->get("preset_folder");
-    if (!preset_folder.empty()) {
-        plugin_mgr.set_cloud_user(preset_folder);
-    }
-
-    plugin_mgr.discover_plugins(false, true);
-
+    // Hook plugins are bootstrapped in CLI::run (after setup/temp dir) with RAII shutdown.
+    // Here we only wire GUI observers; autoload already ran in CLI.
     init_plugin_gui_wiring();
-
-    // Subscribe to the plugin loader and enumerate current actions (UI thread, once).
-    m_action_registry.init();
-
-    for (const std::string& plugin_key : plugin_mgr.get_enabled_plugin_keys()) {
-        if (!plugin_mgr.is_plugin_loaded(plugin_key)) {
-            plugin_mgr.load_plugin(plugin_key, false);
-            BOOST_LOG_TRIVIAL(info) << "Auto-loading plugin on startup: " << plugin_key;
-        }
-    }
 
     copy_network_if_available();
     on_init_network();
 
-    if (m_agent)
-        plugin_mgr.set_cloud_agent(std::dynamic_pointer_cast<OrcaCloudServiceAgent>(m_agent->get_cloud_agent()));
-
-    if (m_agent && m_agent->is_user_login()) {
-        enable_user_preset_folder(true);
-        plugin_mgr.set_cloud_user(m_agent->get_user_id());
-        // If there is a user logged in we do an immediate sync.
-        std::vector<std::string> not_found, unauthorized;
-        plugin_mgr.fetch_plugins_from_cloud(&not_found, &unauthorized);
-        if (plater()) {
-            for (const auto& uuid : not_found) {
-                plater()->get_notification_manager()->push_notification(
-                    NotificationType::CustomNotification,
-                    NotificationManager::NotificationLevel::RegularNotificationLevel,
-                    format(_L("Plugin %s is no longer available."), uuid));
-            }
-            for (const auto& uuid : unauthorized) {
-                plater()->get_notification_manager()->push_notification(
-                    NotificationType::CustomNotification,
-                    NotificationManager::NotificationLevel::RegularNotificationLevel,
-                    format(_L("Plugin %s access is unauthorized."), uuid));
-            }
-        }
-    } else {
-        enable_user_preset_folder(false);
-        plugin_mgr.set_cloud_user("");
-    }
 
     // BBS if load user preset failed
     //if (loaded_preset_result != 0) {
@@ -4038,7 +3900,7 @@ void GUI_App::switch_printer_agent()
 
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << ": printer agent switched to " << effective_agent_id;
 
-    // Start discovery so Python agents can populate the device list via SSDP callback
+    // Start discovery so Bambu agents can populate the device list via SSDP callback
     m_agent->start_discovery(true, false);
 
     // Auto-switch MachineObject (new agent has empty device_info, so always re-select)
@@ -5040,9 +4902,6 @@ void GUI_App::request_user_logout(const std::string& provider/* = ORCA_CLOUD_PRO
 
             remove_user_presets();
             enable_user_preset_folder(false);
-            Slic3r::PluginManager::instance().unload_cloud_plugins();
-            Slic3r::PluginManager::instance().clear_cloud_plugin_metadata();
-            Slic3r::PluginManager::instance().set_cloud_user("");
             preset_bundle->load_user_presets(DEFAULT_USER_FOLDER_NAME, ForwardCompatibilitySubstitutionRule::Enable);
             mainframe->update_side_preset_ui();
 
@@ -5588,12 +5447,9 @@ void GUI_App::enable_user_preset_folder(bool enable)
         std::string user_id = m_agent->get_user_id();
         app_config->set("preset_folder", user_id);
         GUI::wxGetApp().preset_bundle->update_user_presets_directory(user_id);
-        PluginManager::instance().set_cloud_user(user_id);
     } else {
         BOOST_LOG_TRIVIAL(info) << "preset_folder: set to empty";
         app_config->set("preset_folder", "");
-        GUI::wxGetApp().preset_bundle->update_user_presets_directory(DEFAULT_USER_FOLDER_NAME);
-        PluginManager::instance().set_cloud_user("");
     }
 }
 
@@ -5642,10 +5498,6 @@ void GUI_App::on_user_login_handle(wxCommandEvent &evt)
         remove_user_presets();
         enable_user_preset_folder(true);
 
-        dlg.Update(40, _L("Fetching plugins…"));
-        PluginManager::instance().fetch_plugins_from_cloud();
-        if (m_plugins_dlg)
-            m_plugins_dlg->update_plugin_dialog_ui();
 
         dlg.Update(70, _L("Loading user presets…"));
         preset_bundle->load_user_presets(m_agent->get_user_id(provider), ForwardCompatibilitySubstitutionRule::Enable);
@@ -8503,7 +8355,6 @@ void GUI_App::open_plugins_dialog(size_t open_on_tab, const std::string& highlig
 
     try {
         m_plugins_dlg = new PluginsDialog(mainframe, wxID_ANY, _L("Plugins"));
-        m_plugins_dlg->set_open_terminal_dlg_fn();
         m_plugins_dlg->Bind(wxEVT_DESTROY, [this](wxWindowDestroyEvent& event) {
             if (event.GetEventObject() == m_plugins_dlg)
                 m_plugins_dlg = nullptr;
@@ -8530,50 +8381,6 @@ void GUI_App::open_plugins_dialog(size_t open_on_tab, const std::string& highlig
     }
 }
 
-void GUI_App::open_terminal_dialog()
-{
-    // Reached from the plugins dialog's webview ("open_terminal" command), i.e. from
-    // inside the webview script-message callback, which GTK/macOS deliver synchronously
-    // (see ui_create_window in PluginHostUi.cpp). TerminalDialog hosts a webview of its
-    // own, so creating or presenting it on that stack is the same class as the Linux
-    // gtk_window_present crash — defer all window work to a clean main-loop iteration.
-    CallAfter([this]() {
-        if (m_terminal_dlg) {
-            // Re-front the existing window; guard Show() per #13657 (GTK re-enters
-            // layout when showing an already-visible window).
-            if (!m_terminal_dlg->IsShown())
-                m_terminal_dlg->Show();
-            m_terminal_dlg->Raise();
-            return;
-        }
-
-        m_terminal_dlg = new TerminalDialog(mainframe, wxID_ANY, _L("Plugin Terminal"),
-                                            wxDefaultPosition, wxSize(820, 600));
-        m_terminal_dlg->Bind(wxEVT_DESTROY, [this](wxWindowDestroyEvent& event) {
-            if (event.GetEventObject() == m_terminal_dlg)
-                m_terminal_dlg = nullptr;
-            event.Skip();
-        });
-
-        // Show() alone activates and fronts a freshly created window on every platform.
-        m_terminal_dlg->Show();
-    });
-}
-
-void GUI_App::open_speed_dial()
-{
-    if (!mainframe)
-        return;
-    if (!m_speed_dial_dialog) {
-        m_speed_dial_dialog = new SpeedDialWebDialog(mainframe);
-        m_speed_dial_dialog->Bind(wxEVT_DESTROY, [this](wxWindowDestroyEvent& event) {
-            if (event.GetEventObject() == m_speed_dial_dialog)
-                m_speed_dial_dialog = nullptr;
-            event.Skip();
-        });
-    }
-    m_speed_dial_dialog->request_show();
-}
 
 void GUI_App::open_exportpresetbundledialog(size_t open_on_tab, const std::string& highlight_option)
 {

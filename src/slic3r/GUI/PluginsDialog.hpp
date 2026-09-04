@@ -2,13 +2,9 @@
 #define slic3r_PluginsDialog_hpp_
 
 #include "Widgets/WebViewHostDialog.hpp"
-#include "PluginSource.hpp"
 #include "PluginStatus.hpp"
 #include "PluginSort.hpp"
-#include "slic3r/plugin/PluginDescriptor.hpp"
-
 #include <atomic>
-#include <boost/log/trivial.hpp>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -27,11 +23,6 @@
 class wxTimer;
 
 namespace Slic3r {
-
-class PluginCapabilityInterface;
-struct PluginCapabilityId;
-enum class PluginCapabilityType;
-
 namespace GUI {
 
 class PluginsDialog : public Slic3r::GUI::WebViewHostDialog
@@ -46,61 +37,31 @@ public:
 
     ~PluginsDialog();
 
-    void set_open_terminal_dlg_fn();
     void update_plugin_dialog_ui();
 
 private:
-    void open_plugin_on_cloud(const std::string& sharing_token);
-    void open_plugin_hub();
     void on_script_message(const nlohmann::json& payload) override;
-    // Runs one web command on a clean main-loop stack; see on_script_message.
     void handle_web_command(const nlohmann::json& payload);
-    // Re-raises this dialog after a transient modal it opened (file dialog, message box,
-    // progress dialog). Native macOS panels end by re-activating the app's main window
-    // (the mainframe) instead of this webview-hosting dialog, burying it; wx only
-    // compensates for generic wxDialog modals (wxDialog::EndModal raises the parent).
     void restore_z_order();
 
     void send_plugins();
     void set_plugin_sort(const std::string& sort_key, const std::string& sort_order);
     nlohmann::json build_plugins_payload() const;
 
-    bool get_descriptor(const std::string& plugin_key, Slic3r::PluginDescriptor& descriptor) const;
-
-    void refresh_plugin_metadata_async(const wxString& title, const wxString& message, bool fetch_cloud);
-    void prompt_for_missing_plugins();
     void refresh_plugins();
-    void toggle_plugin(const std::string& plugin_key, bool enabled);
-    void toggle_plugin_capability(const std::string& plugin_key, PluginCapabilityType type, const std::string& capability_name, bool enabled);
-    void handle_plugin_menu_action(const std::string& plugin_key, const std::string& action);
+    void toggle_plugin(const std::string& plugin_id, bool enabled);
+    void handle_plugin_menu_action(const std::string& plugin_id, const std::string& action);
 
     void install_plugin_from_file();
     bool install_plugin_package(const std::string& package_path);
-    bool install_cloud_plugin(const std::string& uuid, const std::string& version, const wxString& name);
-    void run_script_plugin_capability(const std::string& plugin_key, const std::string& capability_name);
-    // Config tab. Both are scoped to the full capability ID: a request naming a
-    // capability that is gone or not configurable is refused rather than served from, or written
-    // to, some other entry.
-    void send_capability_config(const PluginCapabilityId& id);
-    void save_capability_config(const PluginCapabilityId& id, const nlohmann::json& config);
-    void restore_capability_config(const PluginCapabilityId& id);
-    // Pushes a one-line result into the web footer status bar (level: "success" | "warn" | "error" | "info"),
-    // used for every plugin/capability operation instead of a modal box so the dialog stays non-disruptive.
+
+    void open_plugin_folder(const std::string& plugin_id);
+    void delete_plugin(const std::string& plugin_id);
+    void reload_plugin(const std::string& plugin_id);
+
     void show_status(const wxString& message, const char* level);
-    // Best-effort human-readable name for a plugin_key (falls back to the key itself).
-    wxString plugin_display_name(const std::string& plugin_key) const;
-    // Turns the pending "Activating..." status into "Activated"/"Failed to activate" once an
-    // asynchronous plugin load reported via update_plugin_dialog_ui() finishes. No-op otherwise.
-    void resolve_pending_activation();
-    void update_plugin(const std::string& plugin_key);
+    wxString plugin_display_name(const std::string& plugin_id) const;
 
-    void open_plugin_folder(const Slic3r::PluginDescriptor& plugin);
-    void delete_local_plugin(const Slic3r::PluginDescriptor& plugin);
-    void unsubscribe_cloud_plugin(const Slic3r::PluginDescriptor& plugin);
-    void reload_local_plugin(const std::string& plugin_key, bool clear_cache);
-    void reinstall_cloud_plugin(const Slic3r::PluginDescriptor& plugin);
-
-    // In the future, we can allow users to choose which plugin version they want to install.
     template<typename Run, typename OnFinish>
     void run_with_dialog(Run&& run,
                          OnFinish&& on_finish,
@@ -245,14 +206,10 @@ private:
         }
     }
 
-    std::function<void()> m_open_terminal_dlg_fn;
     std::shared_ptr<std::atomic<bool>> m_alive = std::make_shared<std::atomic<bool>>(true);
     PluginSortKey m_plugin_sort_key       = PluginSortKey::None;
     PluginSortOrder m_plugin_sort_order   = PluginSortOrder::Asc;
-
-    // Plugin whose asynchronous activation is in flight, awaited by resolve_pending_activation().
-    // Empty when no activation is pending.
-    std::string m_activating_plugin_key;
+    std::string m_activating_plugin_id;
 };
 
 } // namespace GUI

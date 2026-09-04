@@ -1112,7 +1112,6 @@ void MainFrame::shutdown()
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << "MainFrame::shutdown enter";
     if (m_project != nullptr)
         m_project->shutdown();
-    m_plugin_pages.shutdown();
 #ifdef __WXGTK__
     // Edge panels are child windows — wxWidgets destroys them automatically.
     m_edge_bottom = nullptr;
@@ -1340,10 +1339,6 @@ void MainFrame::init_tabpanel() {
     m_calibration->SetBackgroundColour(*wxWHITE);
     m_tabpanel->AddPage(TAB_ID_CALIBRATION, m_calibration, _L("Calibration"), "tab_calibration_active");
 
-    // Plugin pages are appended after the built-in tabs; their ids are namespaced
-    // (plugin.<plugin_key>.<name>) so they can't collide with the built-in TAB_ID_* constants.
-    m_plugin_pages.initialize(m_tabpanel);
-
     if (m_plater) {
         // load initial config
         auto full_config = wxGetApp().preset_bundle->full_config();
@@ -1444,7 +1439,6 @@ void MainFrame::show_device(bool should_use_native) {
 #endif // _MSW_DARK_MODE
 
         fit_tab_labels(); // ORCA on printer change
-        m_plugin_pages.relayout(); // re-sync plugin tabs against the native tabs just mutated above
 
         return;
     }
@@ -1524,7 +1518,6 @@ void MainFrame::show_device(bool should_use_native) {
                                _L("Device"), "tab_monitor_active");
     }
     fit_tab_labels(); // ORCA on printer change
-    m_plugin_pages.relayout(); // re-sync plugin tabs against the native tabs just mutated above
 }
 
 bool MainFrame::is_prepare_or_preview_tab() const
@@ -3397,6 +3390,7 @@ void MainFrame::init_menubar_as_editor()
             return wxGetApp().is_user_login() && !wxGetApp().app_config->get_stealth_mode();
         }, this);
 
+#if defined(ORCA_HOOK_SDK_GENERATION) && ORCA_HOOK_SDK_GENERATION && !defined(ORCA_HOOKS_UNSUPPORTED)
     top_menu->AppendSeparator();
     append_menu_item(
         top_menu, wxID_ANY, _L("Plugins") + "\t", "",
@@ -3404,6 +3398,7 @@ void MainFrame::init_menubar_as_editor()
             wxGetApp().open_plugins_dialog();
         },
         "", nullptr, []() { return true; }, this);
+#endif
 
     //m_topbar->AddDropDownMenuItem(preference_item);
     //m_topbar->AddDropDownMenuItem(printer_item);
@@ -3534,10 +3529,12 @@ void MainFrame::init_menubar_as_editor()
             return wxGetApp().is_user_login() && !wxGetApp().app_config->get_stealth_mode();
         }, this);
 
+#if defined(ORCA_HOOK_SDK_GENERATION) && ORCA_HOOK_SDK_GENERATION && !defined(ORCA_HOOKS_UNSUPPORTED)
     fileMenu->AppendSeparator();
     append_menu_item(
         fileMenu, wxID_ANY, _L("Plugins"), "", [this](wxCommandEvent&) { wxGetApp().open_plugins_dialog(); }, "", nullptr,
         []() { return true; }, this);
+#endif
 
     fileMenu->AppendSeparator();
 

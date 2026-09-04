@@ -36,7 +36,6 @@
 #include "GUI_ObjectList.hpp"
 #include "slic3r/Utils/NetworkAgentFactory.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
-#include "slic3r/plugin/PluginConfig.hpp"
 #include "Plater.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
@@ -1095,8 +1094,7 @@ std::string Tab::options_list_storage_key(const std::string& opt_key) const
         return opt_key;
 
     const bool serialized = def->gui_flags == "serialized";
-    const bool is_plugin_field = def->gui_type == ConfigOptionDef::GUIType::plugin_picker;
-    return (serialized || is_plugin_field) ? opt_key : opt_key + "#0";
+    return serialized ? opt_key : opt_key + "#0";
 }
 
 void Tab::update_all_extruder_options_status()
@@ -1801,23 +1799,6 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
 
     if (wxGetApp().plater() == nullptr) {
         return;
-    }
-
-    // Keep this preset's "plugins" manifest in sync when a plugin picker changes, so full_config() and
-    // save_to_json() always find resolved "name;uuid;capability" references and rebuild it nowhere else.
-    // Also drop any plugin config override entries for a capability the change just stopped
-    // referencing (e.g. a plugin removed from slicing_pipeline_plugin), so a saved preset never
-    // carries configuration for a capability it no longer names. The Configure button is a separate
-    // field holding its own cached copy of that value, so it needs to be told explicitly, or it
-    // keeps showing the stale count until something else happens to refresh it.
-    if (const ConfigOptionDef* opt_def = m_config->def()->get(opt_key);
-        opt_def && opt_def->is_plugin_backed()) {
-        m_config->update_plugin_manifest();
-        const std::string overrides_key = Preset::plugin_overrides_key(m_type);
-        if (prune_stale_plugin_overrides(*m_config, overrides_key)) {
-            if (Field* overrides_field = get_field(overrides_key))
-                overrides_field->set_value(boost::any(m_config->opt_string(overrides_key)), false);
-        }
     }
 
     if (opt_key == "gcode_flavor" && m_type == Preset::TYPE_PRINTER) {
@@ -3112,17 +3093,6 @@ void TabPrint::build()
         option.opt.is_code = true;
         option.opt.height = 15;
         optgroup->append_single_option_line(option, "others_settings_post_processing_scripts");
-
-        optgroup = page->new_optgroup(L("Slicing Pipeline Plugin"), L"param_gcode", 0);
-        optgroup->hide_labels();
-        option = optgroup->get_option("slicing_pipeline_plugin");
-        option.opt.full_width = true;
-        optgroup->append_single_option_line(option, "others_settings_plugin_picker");
-
-        // Its own group: the one above hides its labels, and this row needs its label — and the revert
-        // arrow beside it — to show. No label-width override either, as a 0 there means "no label column".
-        optgroup = page->new_optgroup(L("Plugin Configuration"), L"param_gcode");
-        optgroup->append_single_option_line("print_plugin_config_overrides");
 
         optgroup = page->new_optgroup(L("Notes"), "note", 0);
         option = optgroup->get_option("notes");
@@ -4561,9 +4531,6 @@ void TabFilament::build()
         option.opt.height = gcode_field_height;// 150;
         optgroup->append_single_option_line(option);
 
-        optgroup = page->new_optgroup(L("Plugin Configuration"), L"param_gcode");
-        optgroup->append_single_option_line("filament_plugin_config_overrides");
-
     page = add_options_page(L("Multimaterial"), "custom-gcode_multi_material"); // ORCA: icon only visible on placeholders
         optgroup = page->new_optgroup(L("Wipe tower parameters"), "param_tower");
         optgroup->append_single_option_line("filament_minimal_purge_on_wipe_tower", "material_multimaterial#multimaterial-wipe-tower-parameters");
@@ -5104,9 +5071,6 @@ void TabPrinter::build_fff()
         optgroup->append_single_option_line("use_firmware_retraction", "printer_basic_information_advanced#use-firmware-retraction");
         // optgroup->append_single_option_line("spaghetti_detector");
         optgroup->append_single_option_line("time_cost", "printer_basic_information_advanced#time-cost");
-
-        optgroup = page->new_optgroup(L("Plugin Configuration"), L"param_gcode");
-        optgroup->append_single_option_line("printer_plugin_config_overrides");
 
         optgroup  = page->new_optgroup(L("Cooling Fan"), "param_cooling_fan");
         Line line = Line{ L("Fan speed-up time"), optgroup->get_option("fan_speedup_time").opt.tooltip };

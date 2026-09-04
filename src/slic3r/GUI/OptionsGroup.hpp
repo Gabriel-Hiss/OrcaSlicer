@@ -254,8 +254,6 @@ public:
 	static wxString		get_url(const std::string& path_end);
 	static bool			launch_browser(const std::string& path_end);
 
-protected:
-    std::string         pick_plugin(const ConfigOptionDef& opt);
 };
 
 class ConfigOptionsGroup: public OptionsGroup {

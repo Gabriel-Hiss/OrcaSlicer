@@ -5,14 +5,12 @@
 #include "MainFrame.hpp"
 #include "OG_CustomCtrl.hpp"
 #include "MsgDialog.hpp"
-#include "PluginPickerDialog.hpp"
 #include "format.hpp"
 #include "Widgets/StaticLine.hpp"
 #include "Widgets/LabeledStaticBox.hpp"
 
 #include <boost/log/trivial.hpp>
 #include <libslic3r/Config.hpp>
-#include <slic3r/plugin/PythonPluginInterface.hpp>
 #include <utility>
 #include <wx/bookctrl.h>
 #include <wx/numformatter.h>
@@ -21,7 +19,6 @@
 #include "libslic3r/Exception.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/AppConfig.hpp"
-#include "slic3r/plugin/PluginManager.hpp"
 #include "I18N.hpp"
 #include <algorithm>
 #include <locale>
@@ -52,8 +49,6 @@ const t_field& OptionsGroup::build_field(const t_config_option_key& id, const Co
         m_fields.emplace(id, StaticText::Create<StaticText>(this->ctrl_parent(), opt, id));
         break;
     case ConfigOptionDef::GUIType::one_string: m_fields.emplace(id, TextCtrl::Create<TextCtrl>(this->ctrl_parent(), opt, id)); break;
-    case ConfigOptionDef::GUIType::plugin_picker: m_fields.emplace(id, PluginField::Create<PluginField>(this->ctrl_parent(), opt, id)); break;
-    case ConfigOptionDef::GUIType::plugin_config: m_fields.emplace(id, PluginConfigField::Create<PluginConfigField>(this->ctrl_parent(), opt, id)); break;
     case ConfigOptionDef::GUIType::printer_agent_select: m_fields.emplace(
             id, PrinterAgentChoice::Create<PrinterAgentChoice>(this->ctrl_parent(), opt, id));
         break;
@@ -121,20 +116,6 @@ const t_field& OptionsGroup::build_field(const t_config_option_key& id, const Co
         if (!this->m_disabled)
             this->back_to_sys_value(opt_id);
     };
-
-    if (auto plugin_field = dynamic_cast<PluginField*>(field.get())) {
-        plugin_field->set_selector([this, plugin_field]() -> std::string {
-            if (m_disabled)
-                return {};
-            return this->pick_plugin(plugin_field->m_opt);
-        });
-    }
-
-    // The dialog behind the button edits one preset's overrides, so it has to know which preset. Set
-    // here because fields are built lazily on activate() — too late for the Tab to reach in afterwards.
-    if (auto plugin_config_field = dynamic_cast<PluginConfigField*>(field.get()))
-        if (auto config_group = dynamic_cast<ConfigOptionsGroup*>(this))
-            plugin_config_field->set_preset_type(config_group->config_type());
 
     // assign function objects for callbacks, etc.
     return field;
@@ -693,59 +674,6 @@ void ConfigOptionsGroup::on_change_OG(const t_config_option_key& opt_id, const b
     OptionsGroup::on_change_OG(opt_id, value);
 }
 
-std::string OptionsGroup::pick_plugin(const ConfigOptionDef& opt)
-{
-    Slic3r::PluginManager& manager = Slic3r::PluginManager::instance();
-    const Slic3r::PluginCapabilityType plugin_type = Slic3r::plugin_capability_type_from_string(opt.plugin_type);
-    if (plugin_type == Slic3r::PluginCapabilityType::Unknown) {
-        const std::string message = opt.plugin_type.empty()
-                                        ? "This setting does not specify a plugin capability type."
-                                        : "This setting specifies an unrecognized plugin capability type: '" + opt.plugin_type + "'.";
-        wxMessageBox(from_u8(message), _L("Plugin Selection"), wxOK | wxICON_WARNING, m_parent);
-        return {};
-    }
-
-    struct CapabilityRef { std::string plugin_key; std::string name; };
-    std::vector<CapabilityRef> caps;
-    for (const auto& capability : manager.get_plugin_capabilities(/*plugin_key=*/"", plugin_type, /*only_enabled=*/true))
-        caps.push_back({capability->audit_plugin_key(), capability->name()});
-    std::sort(caps.begin(), caps.end(), [](const CapabilityRef& lhs, const CapabilityRef& rhs) {
-        return lhs.name == rhs.name ? lhs.plugin_key < rhs.plugin_key : lhs.name < rhs.name;
-    });
-
-    if (caps.empty()) {
-        wxMessageBox(_L("No plugins capabilities available for this type.\nEnable or install some to use."), _L("Plugin Selection"), wxOK | wxICON_INFORMATION, m_parent);
-        return {};
-    }
-
-    std::vector<PluginPickerDialog::CapabilityEntry> entries;
-    entries.reserve(caps.size());
-    for (const auto& cap : caps) {
-        Slic3r::PluginDescriptor descriptor;
-        wxString package_name = manager.try_get_plugin_descriptor(cap.plugin_key, descriptor)
-                                    ? from_u8(descriptor.name) : from_u8(cap.plugin_key);
-        entries.push_back({
-            cap.plugin_key, cap.name, from_u8(cap.name) + from_u8(" \xE2\x80\x94 ") + package_name, package_name
-        });
-    }
-
-    PluginPickerDialog dlg(m_parent, from_u8(opt.plugin_type), std::move(entries));
-    if (dlg.ShowModal() != wxID_OK)
-        return {};
-    const auto selection = dlg.selected_capability();
-    if (selection.plugin_key.empty() || selection.name.empty())
-        return {};
-
-    // Only the bare capability name is stored; the full "name;uuid;capability" reference is derived when
-    // the preset is serialized (see ConfigBase::save_plugin_collection). Resolve here to reject bad picks.
-    Slic3r::PluginDescriptor descriptor;
-    if (!manager.try_get_plugin_descriptor(selection.plugin_key, descriptor) || descriptor.name.empty())
-        return {};
-
-    BOOST_LOG_TRIVIAL(info) << "Picked plugin capability: " << selection.name;
-    return selection.name;
-}
-
 void ConfigOptionsGroup::back_to_initial_value(const std::string& opt_key)
 {
     if (m_get_initial_config == nullptr)
@@ -1119,10 +1047,6 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
             ret = config.option<ConfigOptionStrings>(opt_key)->values;
             break;
         }
-        if (opt->gui_type == ConfigOptionDef::GUIType::plugin_picker) {
-            ret = config.option<ConfigOptionStrings>(opt_key)->values;
-            break;
-        }
         if (config.option<ConfigOptionStrings>(opt_key)->values.empty())
             ret = text_value;
         else if (opt->gui_flags == "serialized") {
@@ -1250,10 +1174,6 @@ boost::any ConfigOptionsGroup::get_config_value2(const DynamicPrintConfig& confi
     case coString: ret = config.opt_string(opt_key); break;
     case coStrings:
         if (opt_key == "compatible_printers" || opt_key == "compatible_prints") {
-            ret = config.option<ConfigOptionStrings>(opt_key)->values;
-            break;
-        }
-        if (opt->gui_type == ConfigOptionDef::GUIType::plugin_picker) {
             ret = config.option<ConfigOptionStrings>(opt_key)->values;
             break;
         }

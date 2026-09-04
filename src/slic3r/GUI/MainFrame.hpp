@@ -30,12 +30,10 @@
 
 #include <boost/property_tree/ptree_fwd.hpp>
 
-// BBS
 #include "BBLTopbar.hpp"
 #include "PrinterWebView.hpp"
 #include "calib_dlg.hpp"
 #include "MultiMachinePage.hpp"
-#include "slic3r/plugin/host/PluginPages.hpp"
 
 // Stable identifiers for MainFrame::m_tabpanel's built-in pages. These are
 // names rather than positional indices so optional pages cannot shift them.
@@ -45,7 +43,7 @@
 #define TAB_ID_MONITOR       "monitor"
 // Printer-agents mode shows the legacy web page alongside the native Device tab, so it needs an
 // id of its own: sharing TAB_ID_MONITOR makes every name lookup resolve to whichever of the two
-// comes first, which silently defeats PluginPages' selection round-trip across a tab relayout.
+// comes first, which silently breaks selection round-trip across a tab relayout.
 #define TAB_ID_MONITOR_WEB   "monitor_web"
 #define TAB_ID_MULTI_DEVICE  "multi_device"
 #define TAB_ID_PROJECT       "project"
@@ -364,7 +362,6 @@ public:
     void fit_tab_labels(); // ORCA
     // True while either of the two tabs backed by m_plater is selected.
     bool is_prepare_or_preview_tab() const;
-    PluginPages& plugin_pages() { return m_plugin_pages; }
 
     PA_Calibration_Dlg* m_pa_calib_dlg{ nullptr };
     FlowRateCalibrationDialog* m_flow_rate_calib_dlg{ nullptr };
@@ -390,7 +387,6 @@ public:
     CalibrationPanel*     m_calibration{ nullptr };
     WebViewPanel*         m_webview { nullptr };
     PrinterWebView*       m_printer_view{nullptr};
-    PluginPages           m_plugin_pages;
     wxLogWindow*          m_log_window { nullptr };
     // BBS
     //wxBookCtrlBase*       m_tabpanel { nullptr };

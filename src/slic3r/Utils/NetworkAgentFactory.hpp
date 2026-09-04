@@ -21,21 +21,15 @@ static constexpr char BBL_PRINTER_AGENT_ID[] = "bbl";
 using PrinterAgentFactory =
     std::function<std::shared_ptr<IPrinterAgent>(std::shared_ptr<ICloudServiceAgent> cloud_agent, const std::string& log_dir)>;
 
-// Information about a registered printer agent
+// Information about a registered printer agent (built-in only)
 struct PrinterAgentInfo
 {
-    std::string         id;           // Registry/config key, e.g. "orca" or a plugin AgentInfo::id
+    std::string         id;           // Registry/config key, e.g. "orca" or "bbl"
     std::string         display_name; // e.g., "Orca Native", "Bambu Lab"
-    std::string         plugin_identifier;     // Empty for built-ins, otherwise <plugin_key>;<uuid>;<capability_name>
     PrinterAgentFactory factory;      // Function to create the agent
 
-    bool is_plugin() const { return !plugin_identifier.empty(); }
     PrinterAgentInfo(const std::string& id_, const std::string& display_name_, PrinterAgentFactory factory_)
         : id(id_), display_name(display_name_), factory(std::move(factory_))
-    {}
-
-    PrinterAgentInfo(const std::string& id_, const std::string& display_name_, const std::string& plugin_identifier, PrinterAgentFactory factory_)
-        : id(id_), display_name(display_name_), plugin_identifier(plugin_identifier), factory(std::move(factory_))
     {}
 };
 
@@ -96,11 +90,6 @@ public:
     static const PrinterAgentInfo* get_printer_agent_info(const std::string& id);
 
     /**
-     * Return the full plugin reference for a plugin-backed printer agent ID, or empty for built-ins.
-     */
-    static std::string get_printer_agent_plugin_identifier(const std::string& id);
-
-    /**
      * Get all registered printer agents (for UI population)
      */
     static std::vector<PrinterAgentInfo> get_registered_printer_agents();
@@ -158,13 +147,6 @@ public:
         }
         return nullptr;
     }
-
-    // Plugin printer agents
-    static void register_python_plugin(const std::string& plugin_key);
-    static void deregister_python_plugin(const std::string& plugin_key);
-
-    static void register_python_printer_agent(const std::string& plugin_key, const std::string& capability_name);
-    static void deregister_python_printer_agent(const std::string& plugin_key, const std::string& capability_name);
 
 private:
     // Factory is not instantiable

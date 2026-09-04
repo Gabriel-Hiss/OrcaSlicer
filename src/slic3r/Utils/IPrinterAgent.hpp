@@ -8,7 +8,7 @@
 // wholesale by header-sync commits (see c09252ce11), which would silently clobber them.
 // -70xx is free: the vendor occupies -1..-25 and -10xx through -60xx.
 #define ORCA_NETWORK_ERR_CMD_NOT_SUPPORTED -7010 // no translation exists for this command
-#define ORCA_NETWORK_ERR_CAP_NOT_AVAILABLE -7020 // a translation exists; this printer lacks the capability
+#define ORCA_NETWORK_ERR_CAP_NOT_AVAILABLE -7020 // a translation exists; this printer does not support it
 #include <string>
 #include <memory>
 
@@ -55,8 +55,6 @@ enum class FilamentSyncMode {
  *
  * Implementations:
  * - OrcaPrinterAgent: Stub implementation (printer ops not yet supported)
- * - PrinterAgentPluginCapability: Python printer-agent plugin capability that
- *   implements IPrinterAgent directly and is handed out as the live agent
  * - BBLPrinterAgent: Wrapper around Bambu Lab's proprietary DLL
  *
  * Token Access:

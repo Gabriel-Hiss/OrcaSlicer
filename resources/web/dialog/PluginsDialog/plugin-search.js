@@ -4,8 +4,7 @@ function PluginSearchActive() {
   return pluginSearch.query.length > 0;
 }
 
-// why: matcher (FoldChar/Norm/FuzzyRanges/WholeWordRanges) lives in shared ../js/fuzzy-search.js,
-//      loaded before this script - it is shared with the Speed Dial popup. Cc = pluginSearch.caseSensitive.
+// Matchers (FuzzyRanges/WholeWordRanges) come from ../js/fuzzy-search.js, loaded before this script.
 function MatchText(text, query) {
   if (!query)
     return [];
@@ -14,24 +13,32 @@ function MatchText(text, query) {
     : FuzzyRanges(text, query, pluginSearch.caseSensitive);
 }
 
-// Per-plugin evaluator consumed by RenderPlugins. The name text mirrors LabelCell's pluginLabelText so
-// highlight offsets line up with what is rendered. Capability names exist for loaded plugins only.
 function ComputePluginMatch(plugin) {
-  const name = plugin.label || plugin.name || plugin.plugin_id || "";
-  const nameRanges = MatchText(name, pluginSearch.query);
-  const capabilities = Array.isArray(plugin?.capabilities) ? plugin.capabilities : [];
-  const capRanges = new Map();
-  for (const capability of capabilities) {
-    const key = String(capability?.name || "");
-    const ranges = MatchText(key, pluginSearch.query);
-    if (ranges)
-      capRanges.set(key, ranges);
-  }
+  const q = pluginSearch.query;
+  if (!q) return null;
+  const name = plugin.label || plugin.name || plugin.id || "";
+  const nameRanges = MatchText(name, q);
+  const haystack = [
+    name,
+    String(plugin.id || ""),
+    String(plugin.description || ""),
+    String(plugin.author || ""),
+    String(plugin.version || ""),
+    String(plugin.language || ""),
+    String(plugin.runtime || ""),
+    String((plugin.targets || []).map(t => t.build_id).join(" ")),
+    String(plugin.artifact_path || ""),
+    String(plugin.artifact_hash || ""),
+    String(plugin.current_build_id || ""),
+    String(plugin.status || "")
+  ].join("\n");
+  const anyRanges = MatchText(haystack, q);
+  const matched = !!(nameRanges && nameRanges.length) || !!(anyRanges && anyRanges.length);
+  if (!matched) return null;
   return {
-    matched: !!nameRanges || capRanges.size > 0,
-    nameRanges,
-    capRanges,
-    hasCapMatch: capRanges.size > 0,
+    matched: true,
+    nameRanges: (nameRanges && nameRanges.length) ? nameRanges : null,
+    hasCapMatch: false
   };
 }
 
@@ -49,9 +56,7 @@ function InitPluginSearch() {
   if (!pluginSearchInput)
     return;
 
-  // why: common.js installs a document-level onkeydown that cancels the default action of every key
-  //      (returnValue=false) to block webview shortcuts; on the way up it also swallows typing. Stop the
-  //      field's keydowns from bubbling to it so the input stays editable, leaving the global guard intact.
+  // common.js cancels keydowns at document level; stop propagation so the field stays editable.
   pluginSearchInput.addEventListener("keydown", (event) => event.stopPropagation());
 
   pluginSearchInput.addEventListener("input", OnPluginSearchInput);
@@ -63,7 +68,6 @@ function InitPluginSearch() {
 
 function OnPluginSearchInput() {
   pluginSearch.query = pluginSearchInput.value;
-  // why: emptying the box by editing (not just the x) also ends the search - drop the transient vetoes.
   if (!pluginSearch.query)
     ClearSearchExpandOverride();
   SyncPluginSearchClear();
@@ -87,14 +91,12 @@ function TogglePluginSearchFlag(button, key) {
   RenderPluginsIfReady();
 }
 
-// why: toggle visibility (not display / the hidden attribute) so the x keeps its reserved slot and
-//      showing or hiding it never reflows the Cc / W buttons.
+// Use visibility (not display) so toggling the clear button never reflows Cc/W.
 function SyncPluginSearchClear() {
   if (pluginSearchClear)
     pluginSearchClear.style.visibility = pluginSearch.query.length ? "visible" : "hidden";
 }
 
-// why: searchExpandOverride lives in index.js; guard so this module stays loadable on its own.
 function ClearSearchExpandOverride() {
   if (typeof searchExpandOverride !== "undefined")
     searchExpandOverride.clear();
@@ -105,6 +107,5 @@ function RenderPluginsIfReady() {
     RenderPlugins();
 }
 
-// why: guarded so the module can be loaded in headless syntax checks; mirrors plugin-sort.js.
 if (typeof document !== "undefined")
   document.addEventListener("DOMContentLoaded", InitPluginSearch);

@@ -1,6 +1,6 @@
 // Unit test for the shared fuzzy matcher. Run: node resources/web/js/fuzzy-search.test.js
 // why: fuzzy-search.js is plain global-scope (no exports, so a browser <script src> works) - load it into
-//      a vm context the same way the page and the speed-dial test do, then assert against the globals.
+//      a vm context the same way the page does, then assert against the globals.
 const vm = require("vm"), assert = require("assert"), fs = require("fs");
 const ctx = {};
 vm.createContext(ctx);

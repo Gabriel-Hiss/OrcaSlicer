@@ -15,7 +15,6 @@
   <script type="text/javascript" src="../../data/text.js"></script>
   <script type="text/javascript" src="../js/globalapi.js"></script>
   <script type="text/javascript" src="../js/common.js"></script>
-  <script src="../js/plugin-config-ui.js"></script>
   <script src="./index.js"></script>
   <script src="./plugin-sort.js"></script>
   <script src="../js/fuzzy-search.js"></script>
@@ -45,45 +44,30 @@
         <button id="plugin_search_w" class="plugin-search-toggle" type="button"
           aria-pressed="false" title="Match whole word"><span class="plugin-search-underline">ab</span></button>
       </div>
-<!--        <button id="open_terminal" class="ButtonStyleRegular ButtonTypeChoice left-btn">-->
-<!--            Open Terminal-->
-<!--        </button>-->
       <button id="refresh_btn" class="ButtonStyleRegular ButtonTypeChoice">
         Refresh
       </button>
-      <div id="exploreDropdown" class="explore-dropdown">
-        <button id="explore_menu_btn" class="ButtonStyleConfirm ButtonTypeChoice explore-menu-btn" type="button"
-          aria-haspopup="true" aria-expanded="false" aria-controls="exploreMenu" title="More plugin install options">
-          <span class="explore-menu-icon" aria-hidden="true"></span>
-        </button>
-        <button id="explore_btn" class="ButtonStyleConfirm ButtonTypeChoice explore-main-btn" type="button">
-          Install plugin
-        </button>
-        <div id="exploreMenu" class="explore-menu" role="menu" hidden>
-          <button type="button" class="explore-menu-item" role="menuitem" data-install-action="explore">Install plugin</button>
-          <button type="button" class="explore-menu-item" role="menuitem" data-install-action="install-local">Install local plugin</button>
-        </div>
-      </div>
+      <button id="explore_btn" class="ButtonStyleConfirm ButtonTypeChoice explore-main-btn" type="button">
+        Install plugin
+      </button>
     </div>
 
     <main class="content">
       <section class="pane plugin-list-pane">
         <div class="hdr plugin-cols">
-          <span>Activate</span>
+          <span>Enabled</span>
           <span class="sort-th" data-sort-field="name" role="button" tabindex="0"
             title="Sort by name">Name<span class="sort-tri" aria-hidden="true"></span></span>
           <span class="sort-th" data-sort-field="version" role="button" tabindex="0"
-            title="Sort by version">Plugin Version<span class="sort-tri" aria-hidden="true"></span></span>
-          <span class="sort-th" data-sort-field="source" role="button" tabindex="0"
-            title="Sort by source">Source<span class="sort-tri" aria-hidden="true"></span></span>
+            title="Sort by version">Version<span class="sort-tri" aria-hidden="true"></span></span>
+          <span>Language</span>
+          <span>Runtime</span>
           <span class="sort-th" data-sort-field="status" role="button" tabindex="0"
             title="Sort by status">Status<span class="sort-tri" aria-hidden="true"></span></span>
         </div>
         <div id="pluginList" class="body thin-scroll"></div>
       </section>
 
-      <!-- Drag to redistribute the dialog's height between the list and the details pane; the hit
-           area is the whole strip, the visible divider is the line drawn inside it. -->
       <div id="paneSplitter" class="pane-splitter" role="separator" aria-orientation="horizontal"
         aria-label="Resize the plugin list" title="Drag to resize; double-click to reset"></div>
 
@@ -93,10 +77,6 @@
             aria-selected="true" aria-controls="pluginInfoPanel" data-tab="plugin-info">Plugin Info</button>
           <button id="descriptionTab" class="detail-tab" type="button" role="tab" tabindex="-1"
             aria-selected="false" aria-controls="descriptionPanel" data-tab="description">Description</button>
-          <button id="configTab" class="detail-tab" type="button" role="tab" tabindex="-1"
-            aria-selected="false" aria-controls="configPanel" data-tab="config">Config</button>
-          <button id="changelogTab" class="detail-tab" type="button" role="tab" tabindex="-1"
-            aria-selected="false" aria-controls="changelogPanel" data-tab="changelog">Changelog</button>
           <button id="diagnosticsTab" class="detail-tab" type="button" role="tab" tabindex="-1"
             aria-selected="false" aria-controls="diagnosticsPanel" data-tab="diagnostics">Diagnostics</button>
         </div>
@@ -104,39 +84,54 @@
         <div class="detail-tab-panels">
           <section id="pluginInfoPanel" class="detail-tab-panel" role="tabpanel"
             aria-labelledby="pluginInfoTab" data-panel="plugin-info">
-            <div class="plugin-info-layout">
-              <div class="plugin-thumbnail">
-                <img id="detailThumbnail" alt="" hidden />
+            <div class="detail-fields">
+              <div class="detail-field-row">
+                <div class="detail-label">Plugin ID</div>
+                <div id="detailId" class="detail-value">-</div>
               </div>
-              <div class="detail-fields">
-                <div class="detail-field-row">
-                  <div class="detail-label">Source</div>
-                  <div id="detailSource" class="detail-value">-</div>
-                </div>
-                <div class="detail-field-row">
-                  <div class="detail-label">Types</div>
-                  <div id="detailTypes" class="detail-value">-</div>
-                </div>
-                <div class="detail-field-row">
-                  <div class="detail-label">Author</div>
-                  <div id="detailAuthor" class="detail-value">-</div>
-                </div>
-                <div class="detail-field-row">
-                  <div class="detail-label">Installed Version</div>
-                  <div class="detail-value">
-                    <span id="detailInstalledVersion">-</span>
-                  </div>
-                </div>
-                <div class="detail-field-row">
-                  <div class="detail-label">Latest Version</div>
-                  <div class="detail-value detail-version-row">
-                    <span id="detailLatestVersion">-</span>
-                    <span id="detailUpdateBadge" class="version-update-badge" hidden
-                      aria-label="Update available" title="Update available"></span>
-                    <button id="detailUpdateBtn" type="button" class="plugin-update-btn" hidden
-                      title="Update to the latest version">Update</button>
-                  </div>
-                </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Version</div>
+                <div id="detailVersion" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Author</div>
+                <div id="detailAuthor" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Language</div>
+                <div id="detailLanguage" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Runtime</div>
+                <div id="detailRuntime" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Targets</div>
+                <div id="detailTargets" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Current Build</div>
+                <div id="detailCurrentBuild" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Compatibility</div>
+                <div id="detailCompatible" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Artifact Path</div>
+                <div id="detailArtifactPath" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Artifact Hash</div>
+                <div id="detailArtifactHash" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row">
+                <div class="detail-label">Status</div>
+                <div id="detailStatus" class="detail-value">-</div>
+              </div>
+              <div class="detail-field-row" id="detailErrorRow" hidden>
+                <div class="detail-label">Error</div>
+                <div id="detailError" class="detail-value detail-error-text">-</div>
               </div>
             </div>
           </section>
@@ -145,54 +140,6 @@
             aria-labelledby="descriptionTab" data-panel="description" hidden>
             <h2 class="detail-section-title">Description</h2>
             <div id="detailDescription" class="detail-description">No description available</div>
-          </section>
-
-          <section id="configPanel" class="detail-tab-panel" role="tabpanel" tabindex="0"
-            aria-labelledby="configTab" data-panel="config" hidden>
-            <div id="configEmpty" class="detail-empty">Select a plugin to configure its capabilities</div>
-            <div id="configLayout" class="config-layout" hidden>
-              <div id="configSidebar" class="config-sidebar thin-scroll" role="listbox"
-                aria-label="Configurable capabilities"></div>
-              <div class="config-view">
-                <div id="configError" class="config-error" role="status" aria-live="polite" hidden></div>
-                <div id="configEditor" class="config-editor" hidden>
-                  <textarea id="configText" class="config-textarea thin-scroll" spellcheck="false"
-                    autocomplete="off" autocapitalize="off" aria-label="Capability configuration (JSON)"></textarea>
-                </div>
-                <!-- Custom capability UI. Sandboxed without allow-same-origin, so the plugin's HTML
-                     runs in an opaque origin and reaches the host only through the injected
-                     window.orca bridge. -->
-                <iframe id="configCustom" class="config-custom" title="Plugin configuration"
-                  sandbox="allow-scripts" referrerpolicy="no-referrer" hidden></iframe>
-                <!-- JSON-editor chrome only: a custom UI renders its own save/restore controls and
-                     drives them through the window.orca bridge. -->
-                <div id="configFooter" class="config-view-footer" hidden>
-                  <span id="configValidation" class="config-validation" role="status" aria-live="polite"></span>
-                  <div class="config-actions">
-                    <button id="configRestoreBtn" class="ButtonStyleRegular ButtonTypeChoice" type="button"
-                      title="Discard the settings saved for this capability and restore the plugin's defaults">
-                      Restore defaults
-                    </button>
-                    <button id="configSaveBtn" class="ButtonStyleConfirm ButtonTypeChoice" type="button">Save</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section id="changelogPanel" class="detail-tab-panel thin-scroll" role="tabpanel" tabindex="0"
-            aria-labelledby="changelogTab" data-panel="changelog" hidden>
-            <table id="changelogTable" class="detail-table changelog-table" aria-label="Plugin changelog">
-              <thead>
-                <tr>
-                  <th scope="col">Version</th>
-                  <th scope="col">Date</th>
-                  <th scope="col">Changes</th>
-                </tr>
-              </thead>
-              <tbody id="changelogBody"></tbody>
-            </table>
-            <div id="changelogEmpty" class="detail-empty" hidden>No changelog available</div>
           </section>
 
           <section id="diagnosticsPanel" class="detail-tab-panel thin-scroll" role="tabpanel" tabindex="0"

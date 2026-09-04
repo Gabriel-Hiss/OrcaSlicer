@@ -1,25 +1,24 @@
-// Shared fuzzy-search core for the webview dialogs (Plugins dialog, Speed Dial popup).
-// why: both pages carried their own copy of this matcher and had already drifted; one source of truth.
+// Fuzzy-search core for the Plugins dialog.
 // note: keep this DOM-free and plain global-scope (no export/module) - it is loaded by <script src> in
-//       each page AND by a node vm.runInContext in the speed-dial logic test. It MUST be loaded before
+//       the page AND by a node vm.runInContext in tests. It MUST be loaded before
 //       the page script that calls it.
 
 // Fold per-character so matched offsets stay in ORIGINAL string coordinates (highlighting slices the
 // original text; a separately-folded string would desync offsets).
 function FoldChar(ch) {
-  return ch.normalize("NFD").replace(/\p{Diacritic}/gu, ""); // accents always folded
+  return ch.normalize("NFD").replace(/\p{Diacritic}/gu, "");
 }
 
 function Norm(ch, caseSensitive) {
   const folded = FoldChar(ch);
-  return caseSensitive ? folded : folded.toLowerCase(); // case-sensitivity is the only toggle
+  return caseSensitive ? folded : folded.toLowerCase();
 }
 
 function EscapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// Fuzzy: ordered subsequence. Builds ranges in original coordinates, merging adjacent runs on the fly.
+// Ordered-subsequence match.
 function FuzzyRanges(text, query, caseSensitive) {
   const t = text || "";
   const needle = Array.from(query || "").map((ch) => Norm(ch, caseSensitive)).join("");
@@ -51,7 +50,6 @@ function WholeWordRanges(text, query, caseSensitive) {
   const re = new RegExp(`\\b${EscapeRegExp(needle)}\\b`, "g");
   const ranges = [];
   let match;
-  // why: needle is non-empty, so \b-bounded matches are never zero-length - no empty-match guard needed.
   while ((match = re.exec(haystack)) !== null)
     ranges.push([match.index, match.index + match[0].length]);
   return ranges.length > 0 ? ranges : null;

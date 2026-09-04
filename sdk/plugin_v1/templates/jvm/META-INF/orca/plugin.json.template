@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "id": "com.example.myplugin",
+  "name": "My Orca Hook Plugin",
+  "version": "0.1.0",
+  "runtime": "jvm",
+  "language": "java",
+  "hook_abi": 1,
+  "entry_class": "org.orcaslicer.plugin.v1.examples.ExamplePlugin",
+  "targets": [
+    {
+      "os": "windows",
+      "arch": "x86_64",
+      "build_id": "<windows build_id: windows-x86_64-<guid>-<age>-<sha12>>"
+    },
+    {
+      "os": "linux",
+      "arch": "x86_64",
+      "build_id": "<linux build_id: linux-x86_64-<gnu-build-id16>-<sha12>>"
+    }
+  ],
+  "description": "Example JVM plugin (single .jar may declare multiple targets; runtime picks exact build_id of host independent of declaration order; single-target jar is also valid)",
+  "author": ""
+}

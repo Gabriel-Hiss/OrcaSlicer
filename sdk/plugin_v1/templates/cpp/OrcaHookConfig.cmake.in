@@ -1,0 +1,48 @@
+# @GENERATED@ OrcaHookConfig.cmake.in — CMake package for per-build C++ SDK
+# Emitter replaces @ORCA_BUILD_ID@, @ORCA_HOOK_ABI@, @CMAKE_INSTALL_PREFIX@ etc.
+# Installed to generated/plugin-sdk/<build-id>/lib/cmake/OrcaHook/OrcaHookConfig.cmake
+# Consumer usage:
+#   find_package(OrcaHook REQUIRED)
+#   add_library(my_plugin SHARED my_plugin.cpp)
+#   target_link_libraries(my_plugin PRIVATE OrcaHook::OrcaHook)
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Capture SDK prefix at include time (config is at <sdk>/cpp/lib/cmake/OrcaHook)
+set(_orca_hook_prefix "${CMAKE_CURRENT_LIST_DIR}/../../..")
+get_filename_component(_orca_hook_prefix "${_orca_hook_prefix}" ABSOLUTE)
+
+# Define imported interface library if not already defined
+if(NOT TARGET OrcaHook::OrcaHook)
+  add_library(OrcaHook::OrcaHook INTERFACE IMPORTED)
+  set_target_properties(OrcaHook::OrcaHook PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_orca_hook_prefix}/include;${_orca_hook_prefix}/abi;${_orca_hook_prefix}/include/abi"
+  )
+  set(OrcaHook_INCLUDE_DIRS "${_orca_hook_prefix}/include;${_orca_hook_prefix}/abi;${_orca_hook_prefix}/include/abi")
+  set(OrcaHook_DIR "${CMAKE_CURRENT_LIST_DIR}")
+endif()
+
+include(FindPackageHandleStandardArgs OPTIONAL)
+if(COMMAND find_package_handle_standard_args)
+  find_package_handle_standard_args(OrcaHook DEFAULT_MSG)
+endif()
+
+# Expose build-id and ABI for plugin CMake to embed via configure_file
+set(ORCA_HOOK_BUILD_ID "@ORCA_BUILD_ID@")
+set(ORCA_HOOK_ABI_VERSION @ORCA_HOOK_ABI@)
+set(ORCA_HOOK_ARCH "x86_64")
+if(WIN32)
+    set(ORCA_HOOK_OS "windows")
+else()
+    set(ORCA_HOOK_OS "linux")
+endif()
+
+function(orca_hook_add_metadata TARGET)
+    if(WIN32)
+        target_sources(${TARGET} PRIVATE "${_orca_hook_prefix}/src/metadata.rc")
+    else()
+        target_sources(${TARGET} PRIVATE "${_orca_hook_prefix}/src/metadata_note.S")
+    endif()
+endfunction()

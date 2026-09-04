@@ -1,0 +1,35 @@
+// @GENERATED@ metadata.rc — Windows PE resource for native plugin
+// Emitter replaces @ORCA_PLUGIN_METADATA_JSON@ with escaped JSON string.
+// Resource type ORCA_PLUGIN_METADATA (256), id 1, as per PluginLoader spec:
+//   native metadata in PE resource ORCA_PLUGIN_METADATA id 1 or ELF note .note.orca.plugin
+//   JAR uses META-INF/orca/plugin.json
+// JSON schema (v1): {schema:1, id:"[a-z0-9][a-z0-9._-]{2,127}", name, version(semver),
+//                    runtime:"native"|"jvm", language:"cpp"|"rust"|"java"|"kotlin",
+//                    hook_abi:1, targets:[{os:"windows"|"linux", arch:"x86_64", build_id}], ...}
+// This file is compiled with rc.exe and linked into the DLL.
+
+
+1 "ORCA_PLUGIN_METADATA"
+BEGIN
+    "@ORCA_PLUGIN_METADATA_JSON@\0"
+END
+
+// Also emit version info for diagnostics (optional, not used by loader).
+VS_VERSION_INFO VERSIONINFO
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "FileDescription", "@ORCA_PLUGIN_NAME@ Hook Plugin\0"
+            VALUE "ProductName", "@ORCA_PLUGIN_ID@\0"
+            VALUE "FileVersion", "@ORCA_PLUGIN_VERSION@\0"
+            VALUE "ProductVersion", "@ORCA_PLUGIN_VERSION@\0"
+            VALUE "BuildId", "@ORCA_BUILD_ID@\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

@@ -1,0 +1,4 @@
+org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+org.gradle.parallel=true
+kotlin.code.style=official
+# Bytecode target 25 enforced; requires JDK 25 (JAVA_HOME validated)

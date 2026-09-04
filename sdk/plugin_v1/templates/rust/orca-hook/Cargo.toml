@@ -1,0 +1,17 @@
+[package]
+name = "orca-hook"
+version = "0.1.0"
+edition = "2021"
+description = "OrcaSlicer hook SDK runtime — typed HookTarget, borrowed handles, RawHook/CpuContext"
+license = "AGPL-3.0"
+
+[lib]
+name = "orca_hook"
+path = "src/lib.rs"
+
+[dependencies]
+orca-hook-macros = { workspace = true }
+parking_lot = "0.12"
+
+# No external runtime deps — self-contained, no DLL/SO dep from SDK.
+# SafetyHook/Zydis are host-only.

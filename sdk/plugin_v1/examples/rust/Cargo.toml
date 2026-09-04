@@ -1,0 +1,15 @@
+[package]
+name = "orca-rust-example"
+version = "0.1.0"
+edition = "2021"
+[lib]
+crate-type = ["cdylib"]
+[dependencies]
+orca-hook = { path = "../../../../cmake-build-relwithdebinfo-visual-studio-llvm/generated/plugin-sdk/windows-x86_64-a05740f0-f549-1fc1-4c4c-44205044422e-1-def7bb773d28/rust/orca-hook" }
+orca-hook-macros = { path = "../../../../cmake-build-relwithdebinfo-visual-studio-llvm/generated/plugin-sdk/windows-x86_64-a05740f0-f549-1fc1-4c4c-44205044422e-1-def7bb773d28/rust/orca-hook-macros" }
+ctor = "0.2"
+windows-sys = { version = "0.52", features = ["Win32_System_Environment", "Win32_Foundation"] }
+[build-dependencies]
+orca-hook-build = { path = "../../../../cmake-build-relwithdebinfo-visual-studio-llvm/generated/plugin-sdk/windows-x86_64-a05740f0-f549-1fc1-4c4c-44205044422e-1-def7bb773d28/rust/orca-hook-build" }
+winres = "0.1"
+serde_json = "1"

@@ -1,0 +1,5 @@
+#include <windows.h>
+1 "ORCA_PLUGIN_METADATA"
+BEGIN
+    "{""schema"":1,""id"":""com.orca.cpp-example"",""name"":""Cpp Example"",""version"":""0.1.0"",""runtime"":""native"",""language"":""cpp"",""hook_abi"":1,""targets"":[{""os"":""windows"",""arch"":""x86_64"",""build_id"":""windows-x86_64-646e5dfe-6c5f-10ef-4c4c-44205044422e-1-55e3a5b9bd00""}]}\0"
+END

@@ -1,0 +1,136 @@
+#define ORCA_HOOK_BUILDING_PLUGIN
+#include "orca/plugin/plugin.hpp"
+#include "orca/plugin/detail/registry.hpp"
+#include "orca/plugin/raw.hpp"
+#include <vector>
+#include <mutex>
+#include <exception>
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
+#if __has_include("orca_hook_api.h")
+#include "orca_hook_api.h"
+#elif __has_include("abi/orca_hook_api.h")
+#include "abi/orca_hook_api.h"
+#elif __has_include("../../abi/orca_hook_api.h")
+#include "../../abi/orca_hook_api.h"
+#else
+#error "canonical sdk/plugin_v1/abi/orca_hook_api.h not found — generated SDK must copy it to abi/orca_hook_api.h"
+#endif
+static const char* ORCA_BUILD_ID = "@ORCA_BUILD_ID@";
+namespace orca::plugin::detail {
+static std::vector<HookRegistration> g_regs;
+static std::mutex g_mu;
+void register_hook(const HookRegistration& reg) noexcept {
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_regs.push_back(reg);
+}
+std::vector<HookRegistration> take_registrations() noexcept {
+    std::lock_guard<std::mutex> lk(g_mu);
+    auto out = std::move(g_regs);
+    g_regs.clear();
+    return out;
+}
+}
+#if defined(_MSC_VER)
+extern "C" int on_plugin_load(const orca_host_api_v1_t*) noexcept;
+extern "C" int on_plugin_unload(const orca_host_api_v1_t*) noexcept;
+extern "C" int default_on_plugin_load(const orca_host_api_v1_t*) noexcept { return 0; }
+extern "C" int default_on_plugin_unload(const orca_host_api_v1_t*) noexcept { return 0; }
+#pragma comment(linker, "/alternatename:on_plugin_load=default_on_plugin_load")
+#pragma comment(linker, "/alternatename:on_plugin_unload=default_on_plugin_unload")
+#else
+extern "C" __attribute__((weak)) int on_plugin_load(const orca_host_api_v1_t* ) noexcept { return 0; }
+extern "C" __attribute__((weak)) int on_plugin_unload(const orca_host_api_v1_t*) noexcept { return 0; }
+#endif
+static const orca_host_api_v1_t* g_host = nullptr;
+static int32_t call_user_load(const orca_host_api_v1_t* host) noexcept {
+    try { return on_plugin_load(host); } catch(...) { return -1; }
+}
+static int32_t call_user_unload(const orca_host_api_v1_t* host) noexcept {
+    try { return on_plugin_unload(host); } catch(...) { return -1; }
+}
+extern "C" ORCA_HOOK_EXPORT orca_hook_status_t orca_plugin_entry_v1(const orca_host_api_v1_t* host) noexcept {
+    if (!host || host->version != ORCA_HOOK_ABI_VERSION) return (orca_hook_status_t)-2;
+    g_host = host;
+    auto regs = ::orca::plugin::detail::take_registrations();
+    std::vector<orca_hook_handle_t> installed;
+    installed.reserve(regs.size());
+    for (auto& r : regs) {
+        orca_hook_request_t req{};
+        req.size = sizeof(req);
+        req.version = ORCA_HOOK_ABI_VERSION;
+        req.hook_id = r.hook_id ? r.hook_id : "hook";
+        req.target_symbol_id = r.symbol_id;
+        req.target_rva = r.rva;
+        req.point = static_cast<orca_hook_point_t>(r.point);
+        req.kind = static_cast<orca_hook_kind_t>(r.kind);
+        req.priority = (uint32_t)r.priority;
+        if (r.point == ::orca::plugin::HookPoint::Offset) req.u.offset.rva = r.offset_rva;
+        else if (r.point == ::orca::plugin::HookPoint::VTable) { req.u.vtable.index = r.vtable_index; req.u.vtable.is_per_instance = 0; req.u.vtable.instance = nullptr; }
+        else if (r.point == ::orca::plugin::HookPoint::Iat || r.point == ::orca::plugin::HookPoint::Got) { req.u.import_.module = r.import_module; req.u.import_.name = r.import_name; }
+        else if (r.point == ::orca::plugin::HookPoint::Invoke) req.u.invoke.ordinal = r.ordinal;
+        req.callback = r.trampoline;
+        req.user_data = r.user_data;
+        orca_hook_handle_t h = nullptr;
+        orca_hook_status_t st = ORCA_HOOK_ERR_INTERNAL;
+        if (host->install_hook) st = host->install_hook(&req, &h);
+        else st = ORCA_HOOK_ERR_INTERNAL;
+        if (st != ORCA_HOOK_OK) {
+            for (auto it = installed.rbegin(); it != installed.rend(); ++it) if (host->remove_hook) host->remove_hook(*it);
+            return st;
+        }
+        installed.push_back(h ? h : r.trampoline);
+    }
+    return (orca_hook_status_t)call_user_load(host);
+}
+extern "C" ORCA_HOOK_EXPORT orca_hook_status_t orca_plugin_exit_v1(void) noexcept {
+    int32_t rc = call_user_unload(g_host);
+    g_host = nullptr;
+    return (orca_hook_status_t)rc;
+}
+namespace orca::plugin {
+bool RawHook::read(uint64_t addr, void* out, size_t len) const noexcept {
+    if (host_ && host_->read_memory) return host_->read_memory(reinterpret_cast<const void*>(addr), out, len) == ORCA_HOOK_OK;
+#if defined(_MSC_VER)
+    memcpy(out, reinterpret_cast<void*>(addr), len);
+#else
+    __builtin_memcpy(out, reinterpret_cast<void*>(addr), len);
+#endif
+    return true;
+}
+bool RawHook::write(uint64_t addr, const void* data, size_t len) const noexcept {
+    if (host_ && host_->write_memory) return host_->write_memory(reinterpret_cast<void*>(addr), data, len) == ORCA_HOOK_OK;
+#if defined(_MSC_VER)
+    memcpy(reinterpret_cast<void*>(addr), data, len);
+#else
+    __builtin_memcpy(reinterpret_cast<void*>(addr), data, len);
+#endif
+    return true;
+}
+bool RawHook::protect(uint64_t addr, size_t len, uint32_t prot) const noexcept {
+    if (host_ && host_->protect_memory) { uint32_t old=0; return host_->protect_memory(reinterpret_cast<void*>(addr), len, prot, &old)==ORCA_HOOK_OK; }
+    return false;
+}
+void RawHook::flush_icache(uint64_t addr, size_t len) const noexcept {
+    if (host_ && host_->flush_icache) host_->flush_icache(reinterpret_cast<void*>(addr), len);
+}
+}
+namespace orca::plugin::detail {
+bool CpuContext::read_memory(uint64_t addr, void* out, size_t len) const noexcept {
+#if defined(_MSC_VER)
+    memcpy(out, reinterpret_cast<void*>(addr), len);
+#else
+    __builtin_memcpy(out, reinterpret_cast<void*>(addr), len);
+#endif
+    return true;
+}
+bool CpuContext::write_memory(uint64_t addr, const void* data, size_t len) noexcept {
+#if defined(_MSC_VER)
+    memcpy(reinterpret_cast<void*>(addr), data, len);
+#else
+    __builtin_memcpy(reinterpret_cast<void*>(addr), data, len);
+#endif
+    return true;
+}
+}

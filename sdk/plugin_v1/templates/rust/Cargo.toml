@@ -1,0 +1,19 @@
+# @GENERATED@ Cargo.toml — workspace for per-build Rust SDK
+# Emitter copies this template to generated/plugin-sdk/<build-id>/rust/
+# and fills @ORCA_BUILD_ID@, @ORCA_HOOK_ABI@ etc.
+[workspace]
+members = ["orca-hook", "orca-hook-macros", "orca-hook-build"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["OrcaSlicer"]
+license = "AGPL-3.0"
+repository = "https://github.com/SoftFever/OrcaSlicer"
+# Build id embedded via orca-hook-build env.
+
+[workspace.dependencies]
+orca-hook = { path = "orca-hook" }
+orca-hook-macros = { path = "orca-hook-macros" }
+orca-hook-build = { path = "orca-hook-build" }

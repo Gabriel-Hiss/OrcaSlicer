@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "com.orca.kotlin-example",
+  "name": "Kotlin Example",
+  "version": "0.1.0",
+  "runtime": "jvm",
+  "language": "kotlin",
+  "hook_abi": 1,
+  "targets": [
+    {
+      "os": "windows",
+      "arch": "x86_64",
+      "build_id": "windows-x86_64-a05740f0-f549-1fc1-4c4c-44205044422e-1-def7bb773d28"
+    }
+  ],
+  "entry_class": "org.orcaslicer.plugin.v1.examples.ExamplePluginKt"
+}

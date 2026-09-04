@@ -1,0 +1,8 @@
+/* @GENERATED@ exports.lds — Linux plugin exports, only two ABI symbols */
+{
+  global:
+    orca_plugin_entry_v1;
+    orca_plugin_exit_v1;
+  local:
+    *;
+};

@@ -1,0 +1,28 @@
+// @GENERATED@ symbols.hpp — per-build typed bindings, emitted by hook-sdkgen
+// Emitter iterates manifest symbols where typed_binding.available==true and emits:
+//   - fixed type aliases (void, bool, int32_t etc., enums, pointers, this, fixed arrays,
+//     trivially-copyable aggregates with complete layout)
+//   - HookTarget instantiations with real RVA, typed_binding metadata
+// Symbols where available==false are omitted here; they are still resolvable via
+// RawHook/CpuContext by id/RVA, with reason in manifest (varargs, incomplete, unsupported CC, non-trivial by-value).
+#pragma once
+#include "orca/plugin/hook_target.hpp"
+
+// Build identity for this SDK — exact match required by loader
+// @ORCA_BUILD_ID@ e.g. windows-x86_64-<guid>+<age>-<sha256_hex>
+static constexpr const char* ORCA_BUILD_ID = "@ORCA_BUILD_ID@";
+static constexpr uint32_t ORCA_HOOK_ABI = 1;
+static constexpr const char* ORCA_OS = "@ORCA_OS@";   // windows | linux
+static constexpr const char* ORCA_ARCH = "x86_64";
+
+// Example emitted entries (illustrative; real file has one per symbol):
+// @GENERATED_SYMBOL_ENTRIES@
+// For template compilation without generation, provide one concrete example:
+namespace orca::symbols {
+// This is the symbol all four language examples intercept.
+inline constexpr ::orca::plugin::HookTarget<void(*)()> CLI_print_help{
+    "Slic3r::CLI::print_help", 0x0 // RVA filled per build; 0 means placeholder before generation
+};
+} // namespace orca::symbols
+
+// Aggregate include for consumer: #include "orca/generated/symbols.hpp"

@@ -1,0 +1,20 @@
+// @GENERATED@ metadata_note.S — Linux ELF note for native plugin
+// Emitter replaces @ORCA_PLUGIN_METADATA_JSON@ with JSON bytes and length.
+// Note section .note.orca.plugin, type ORCA (0x4F524341), desc = JSON.
+// GNU ld / clang will keep this note when --build-id is present.
+// JSON schema same as Windows resource; see metadata.rc.in.
+
+    .section ".note.orca.plugin", "a", @note
+    .balign 4
+    .long 4                       // namesz ("ORCA")
+    .long @ORCA_PLUGIN_METADATA_LEN@ // descsz (JSON length incl. NUL)
+    .long 0x4F524341              // type 'ORCA'
+    .asciz "ORCA"                 // name, padded to 4
+    .balign 4
+    .asciz "@ORCA_PLUGIN_METADATA_JSON@" // desc (JSON)
+    .balign 4
+
+// Build-id note is emitted by linker (--build-id=sha1); hook-sdkgen reads
+// GNU build-id (20 bytes) + image SHA256 (32 bytes) to form build_id:
+//   build_id = "<os>-<arch>-<gnu_build_id_hex>-<image_sha256_hex>"
+// The plugin loader verifies exact match before executing any code.

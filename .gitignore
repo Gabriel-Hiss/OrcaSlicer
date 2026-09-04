@@ -51,3 +51,17 @@ internal_docs/
 __pycache__/
 *.pyc
 *.opc
+
+# Native hook SDK and example build artifacts
+/cmake-build-*/
+/hook-examples/
+/sdk/plugin_v1/examples/**/build/
+/sdk/plugin_v1/examples/**/target/
+/sdk/plugin_v1/examples/**/.gradle/
+/sdk/plugin_v1/examples/**/*.class
+/sdk/plugin_v1/examples/**/*.jar
+/sdk/plugin_v1/examples/**/*.dll
+/build_cpp*.bat
+/build_orca.bat
+/reconfig_cpp.bat
+/tmp_build_*.bat

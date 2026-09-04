@@ -114,23 +114,14 @@ set(SLIC3R_GUI_SOURCES
     GUI/Downloader.hpp
     GUI/DownloadProgressDialog.cpp
     GUI/DownloadProgressDialog.hpp
-    GUI/PluginSource.hpp
     GUI/PluginSort.hpp
     GUI/PluginStatus.hpp
-    GUI/PluginPickerDialog.cpp
-    GUI/PluginPickerDialog.hpp
+    GUI/PluginDialogPayload.hpp
+    GUI/PluginDialogPayload.cpp
     GUI/PluginsDialog.cpp
     GUI/PluginsDialog.hpp
-    GUI/SpeedDialDialog.cpp
-    GUI/SpeedDialDialog.hpp
-    GUI/ActionRegistry.cpp
-    GUI/ActionRegistry.hpp
-    GUI/PluginsConfigDialog.cpp
-    GUI/PluginsConfigDialog.hpp
     GUI/ProcessRunner.cpp
     GUI/ProcessRunner.hpp
-    GUI/TerminalDialog.cpp
-    GUI/TerminalDialog.hpp
     GUI/PluginProgressDialog.cpp
     GUI/PluginProgressDialog.hpp
     GUI/PluginWebDialog.cpp
@@ -615,56 +606,30 @@ set(SLIC3R_GUI_SOURCES
     GUI/wxExtensions.hpp
     GUI/wxMediaCtrl3.cpp
     GUI/wxMediaCtrl3.h
-    plugin/PythonInterpreter.cpp
-    plugin/PythonInterpreter.hpp
-    plugin/PythonPluginBridge.cpp
-    plugin/PythonPluginBridge.hpp
-    plugin/PythonPluginInterface.hpp
-    plugin/PyPluginPackage.hpp
-    plugin/PluginBindingUtils.hpp
-    plugin/host/PluginHost.cpp
-    plugin/host/PluginHost.hpp
-    plugin/host/PluginHostBindings.hpp
-    plugin/host/PluginHostApp.cpp
-    plugin/host/PluginHostGeometry.cpp
-    plugin/host/PluginHostMesh.cpp
-    plugin/host/PluginHostMesh.hpp
-    plugin/host/PluginHostModel.cpp
-    plugin/host/PluginHostPresets.cpp
-    plugin/host/PluginHostSlicing.cpp
-    plugin/host/PluginHostUi.cpp
-    plugin/host/PluginHostUi.hpp
-    plugin/host/PluginPages.cpp
-    plugin/host/PluginPages.hpp
-    plugin/CloudPluginService.cpp
-    plugin/CloudPluginService.hpp
     plugin/PluginFsUtils.cpp
     plugin/PluginFsUtils.hpp
-    plugin/PluginConfig.cpp
-    plugin/PluginConfig.hpp
+    plugin/PluginDescriptor.hpp
     plugin/PluginLoader.cpp
     plugin/PluginLoader.hpp
-    plugin/PluginDescriptor.hpp
-    plugin/PluginHooks.cpp
-    plugin/PluginHooks.hpp
     plugin/PluginManager.cpp
     plugin/PluginManager.hpp
-    plugin/PluginAuditManager.cpp
-    plugin/PluginAuditManager.hpp
-    plugin/PluginResolver.cpp
-    plugin/PluginResolver.hpp
-    plugin/pluginTypes/printerAgent/PrinterAgentPluginCapability.hpp
-    plugin/pluginTypes/printerAgent/PrinterAgentPluginCapability.cpp
-    plugin/pluginTypes/printerAgent/PrinterAgentPluginCapabilityTrampoline.hpp
-    plugin/pluginTypes/pages/PagesPluginCapability.hpp
-    plugin/pluginTypes/pages/PagesPluginCapability.cpp
-    plugin/pluginTypes/pages/PagesPluginCapabilityTrampoline.hpp
-    plugin/pluginTypes/script/ScriptPluginCapability.hpp
-    plugin/pluginTypes/script/ScriptPluginCapability.cpp
-    plugin/pluginTypes/script/ScriptPluginCapabilityTrampoline.hpp
-    plugin/pluginTypes/slicingPipeline/SlicingPipelinePluginCapability.hpp
-    plugin/pluginTypes/slicingPipeline/SlicingPipelinePluginCapability.cpp
-    plugin/pluginTypes/slicingPipeline/SlicingPipelinePluginCapabilityTrampoline.hpp
+    plugin/package/PluginMetadata.cpp
+    plugin/package/PluginMetadata.hpp
+    plugin/package/PackageReader.cpp
+    plugin/package/PackageReader.hpp
+    plugin/package/InstallState.cpp
+    plugin/package/InstallState.hpp
+    plugin/package/Hash.cpp
+    plugin/package/Hash.hpp
+    plugin/package/PluginPackage.hpp
+    plugin/runtime/jvm/JvmDiscovery.cpp
+    plugin/runtime/jvm/JvmDiscovery.hpp
+    plugin/runtime/jvm/JvmHostBridge.cpp
+    plugin/runtime/jvm/JvmHostBridge.hpp
+    plugin/runtime/jvm/JvmPluginRuntime.cpp
+    plugin/runtime/jvm/JvmPluginRuntime.hpp
+    plugin/runtime/jvm/JvmOffStub.cpp
+    plugin/runtime/jvm/JvmOffStub.hpp
     pchheader.cpp
     pchheader.hpp
     Utils/ASCIIFolding.cpp
@@ -845,14 +810,78 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SLIC3R_GUI_SOURCES})
 
 encoding_check(libslic3r_gui)
 
+# Dedicated hook runtime — isolated C++23
+# Package/JVM/manager remain in libslic3r_gui (C++17). Fail on supported platforms when SafetyHook missing.
+if(WIN32 OR (UNIX AND NOT APPLE))
+    add_library(orca_hook_runtime STATIC
+        plugin/hook/HookRuntime.cpp
+        plugin/hook/HookRuntime.hpp
+        plugin/hook/HookRegistry.cpp
+        plugin/hook/HookRegistry.hpp
+        plugin/hook/HookBackend.hpp
+        plugin/hook/HookBackendWindows.cpp
+        plugin/hook/HookBackendWindows.hpp
+        plugin/hook/HookBackendLinux.cpp
+        plugin/hook/HookBackendLinux.hpp
+        plugin/hook/HookManifest.cpp
+        plugin/hook/HookManifest.hpp
+        plugin/hook/HookMemory.cpp
+        plugin/hook/HookMemory.hpp
+        plugin/hook/HookDefs.hpp
+        plugin/hook/CpuContext.hpp
+        plugin/hook/Dispatch.cpp
+        plugin/hook/Dispatch.hpp
+        plugin/hook/ReturnScan.cpp
+        plugin/hook/arch/X64Stubs.hpp
+    )
+    set_target_properties(orca_hook_runtime PROPERTIES CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+    target_include_directories(orca_hook_runtime PRIVATE Utils ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/plugin_v1/abi)
+    target_include_directories(orca_hook_runtime SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../deps/SafetyHook)
+    if(WIN32)
+        enable_language(ASM_MASM)
+        set(_orca_stubs_obj "${CMAKE_CURRENT_BINARY_DIR}/X64Stubs.obj")
+        add_custom_command(
+            OUTPUT "${_orca_stubs_obj}"
+            COMMAND "${CMAKE_ASM_MASM_COMPILER}" /c "/Fo${_orca_stubs_obj}" "${CMAKE_CURRENT_SOURCE_DIR}/plugin/hook/arch/X64Stubs.asm"
+            DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/plugin/hook/arch/X64Stubs.asm"
+            COMMENT "Assembling X64Stubs.asm (ml64) for orca_hook_runtime"
+            VERBATIM
+        )
+        set_source_files_properties("${_orca_stubs_obj}" PROPERTIES GENERATED TRUE EXTERNAL_OBJECT TRUE)
+        target_sources(orca_hook_runtime PRIVATE "${_orca_stubs_obj}")
+    elseif(UNIX AND NOT APPLE)
+        enable_language(ASM)
+        target_sources(orca_hook_runtime PRIVATE plugin/hook/arch/X64Stubs_linux.S)
+    endif()
+    # Installed by dep_SafetyHook into ${CMAKE_PREFIX_PATH}/include/safetyhook (normalized to both casings)
+    # Fail configure on supported platforms when SafetyHook isn't found rather than fallback.
+    set(_safetyhook_inc_dir "${CMAKE_PREFIX_PATH}/include/safetyhook")
+    set(_safetyhook_cpp "${_safetyhook_inc_dir}/safetyhook.cpp")
+    set(_zydis_c "${_safetyhook_inc_dir}/Zydis.c")
+    if(NOT EXISTS "${_safetyhook_cpp}" AND NOT EXISTS "${_safetyhook_inc_dir}/safetyhook.hpp")
+        message(FATAL_ERROR "SafetyHook not found on supported platform (WIN32 or Linux x64). Build deps with dep_SafetyHook (SafetyHook v0.7.0 amalgamated-zydis, SHA 505d4c07ec1c5b94a17f3906ca86afbe1264e738d8becaa244866694c6200c2c) or install SafetyHook before configuring. Expected files not found at ${_safetyhook_cpp} and ${_safetyhook_inc_dir}/safetyhook.hpp (CMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH}).")
+    endif()
+    # Handle lower-case fallback if upper not present (amalgamated ZIP may use zydis.c)
+    if(NOT EXISTS "${_zydis_c}" AND EXISTS "${_safetyhook_inc_dir}/zydis.c")
+        set(_zydis_c "${_safetyhook_inc_dir}/zydis.c")
+    endif()
+    target_include_directories(orca_hook_runtime PUBLIC "${CMAKE_PREFIX_PATH}/include" "${_safetyhook_inc_dir}")
+    target_compile_definitions(orca_hook_runtime PRIVATE ZYDIS_STATIC_BUILD)
+    target_sources(orca_hook_runtime PRIVATE "${_safetyhook_cpp}" "${_zydis_c}")
+else()
+    add_library(orca_hook_runtime INTERFACE)
+    target_compile_definitions(orca_hook_runtime INTERFACE ORCA_HOOKS_UNSUPPORTED=1)
+endif()
+
 
 if(APPLE AND CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
     set(_opengl_link_lib "")
+
 else()
     set(_opengl_link_lib OpenGL::GL)
 endif()
 
-target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise pybind11::embed)
+target_link_libraries(libslic3r_gui libslic3r cereal::cereal imgui imguizmo minilzo libvgcode md4c-html glad ${_opengl_link_lib} hidapi mdns ${wxWidgets_LIBRARIES} glfw libcurl OpenSSL::SSL OpenSSL::Crypto noise::noise)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # Linux finds wxWidgets in module mode, whose include dirs and definitions
@@ -967,32 +996,19 @@ endif ()
 # Add a definition so that we can tell we are compiling slic3r.
 target_compile_definitions(libslic3r_gui PRIVATE SLIC3R_CURRENTLY_COMPILING_GUI_MODULE)
 
-if(ORCA_BUNDLED_UV_EXECUTABLE_CONFIG)
-    target_compile_definitions(libslic3r_gui PRIVATE "ORCA_BUNDLED_UV_EXECUTABLE=\"${ORCA_BUNDLED_UV_EXECUTABLE_CONFIG}\"")
+if(ORCA_GENERATE_HOOK_SDK)
+    target_compile_definitions(libslic3r_gui PRIVATE ORCA_HOOK_SDK_GENERATION=1)
+else()
+    target_compile_definitions(libslic3r_gui PRIVATE ORCA_HOOK_SDK_GENERATION=0)
 endif()
 
-if (ORCA_BUILD_PYTHON_STUBGEN_MODULE)
-    add_library(orca_stubgen MODULE
-        plugin/PythonPluginBridge.cpp
-    )
-
-    target_compile_definitions(orca_stubgen PRIVATE
-        ORCA_PYTHON_STUBGEN_MODULE
-    )
-
-    target_include_directories(orca_stubgen PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_BINARY_DIR}
-        Utils
-    )
-
-    target_link_libraries(orca_stubgen PRIVATE
-        libslic3r_gui
-        pybind11::embed
-    )
-
-    set_target_properties(orca_stubgen PROPERTIES
-        OUTPUT_NAME orca
-        PREFIX ""
-    )
+if(ORCA_JVM_AVAILABLE)
+    find_package(JNI QUIET)
+    if(JNI_FOUND)
+        target_include_directories(libslic3r_gui PRIVATE ${JNI_INCLUDE_DIRS})
+        target_compile_definitions(libslic3r_gui PRIVATE ORCA_JVM_AVAILABLE=1)
+    endif()
 endif()
+
+# Link dedicated hook runtime (C++23) to GUI (C++17) — package/JVM/manager stay in GUI
+target_link_libraries(libslic3r_gui orca_hook_runtime)

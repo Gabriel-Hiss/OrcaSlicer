@@ -4,45 +4,35 @@
 
 #include <boost/filesystem/path.hpp>
 
-#include <functional>
 #include <string>
-#include <vector>
 
 namespace Slic3r {
-struct Plugin;
-} // namespace Slic3r
+struct LoadedPlugin;
+}
 
 namespace Slic3r::plugin_loader {
-bool load(const PluginDescriptor&                          descriptor,
-          bool                                             skip_deps,
-          const std::vector<std::string>&                  capabilities_to_enable,
-          const std::function<std::string(const Plugin&)>& registry_precheck,
-          Plugin&                                          out,
-          std::string&                                     error);
 
-// Run on_unload() on every capability, drop them, and release the module. Safe to call on a
-// not-loaded Plugin, and safe after the interpreter has been finalized (in which case the module
-// reference is deliberately leaked rather than DECREF'd).
-void unload(Plugin& plugin);
+bool is_allowed_artifact(const boost::filesystem::path &path, std::string &normalized_ext, std::string &error);
 
-// Install Python dependencies into the shared packages directory via the bundled uv. Blocks, with
-// a 120 s cap.
-bool install_packages(const std::vector<std::string>& pkgs, std::string& error);
+// Inspect without executing plugin code.
+bool inspect_local_plugin_package(const boost::filesystem::path &filepath,
+                                  PluginDescriptor& plugin_descriptor,
+                                  bool& existing_installation,
+                                  std::string& error);
 
-// Read a local .py/.whl package's metadata without installing it, and report whether a package is
-// already installed under the same directory.
-bool inspect_local_plugin_package(const boost::filesystem::path& filepath,
-                                  PluginDescriptor&              plugin_descriptor,
-                                  bool&                          existing_installation,
-                                  std::string&                   error);
+// Install transactionally: inspect, copy into orca_plugins/<id>/, write InstallState.
+bool install_plugin(const boost::filesystem::path &filepath,
+                    PluginDescriptor& plugin_descriptor,
+                    std::string& error);
+bool install_plugin(const boost::filesystem::path &filepath, std::string& error);
 
-// Copy a .py/.whl package into the plugin directory (the per-user cloud directory when the
-// descriptor carries a cloud UUID and cloud_user_id is non-empty) and write its
-// .install_state.json sidecar, backing up and restoring any existing installation on failure.
-bool install_plugin(const boost::filesystem::path& filepath,
-                    const std::string&             cloud_user_id,
-                    PluginDescriptor&              plugin_descriptor,
-                    std::string&                   error);
-bool install_plugin(const boost::filesystem::path& filepath, const std::string& cloud_user_id, std::string& error);
+// Load/unload a discovered plugin; never executes on build mismatch.
+bool load_plugin(LoadedPlugin& plugin, std::string& error);
+void unload_plugin(LoadedPlugin& plugin, std::string& error);
+void unload_plugin(LoadedPlugin& plugin); // no error
+
+// Current build id for mismatch checks (empty when the runtime is not initialized).
+std::string current_build_id_string();
+bool has_build_match(const PluginDescriptor& desc);
 
 } // namespace Slic3r::plugin_loader

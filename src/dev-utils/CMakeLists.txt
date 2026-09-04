@@ -70,3 +70,9 @@ function(encoding_check TARGET)
         add_dependencies(${TARGET} global-encoding-check)
     endif()
 endfunction()
+
+# hook-sdkgen: deterministic manifest generation from PE/PDB (Windows) and ELF/DWARF (Linux future)
+# Windows reads PE CodeView identity/hash and PDB through DIA from VSINSTALLDIR; non-Windows excludes DiaReader cleanly.
+add_subdirectory(hook-sdkgen)
+# patch2plugin: deterministic patch -> hook plugin conversion (no LLM)
+add_subdirectory(patch2plugin)

@@ -102,13 +102,6 @@ enum PrintObjectStep {
     posCount,
 };
 
-enum class SlicingPipelineStepPlugin {
-    posSlice, posPerimeters, posEstimateCurledExtrusions, posPrepareInfill, posInfill, posIroning, posContouring,
-    posSupportMaterial, posDetectOverhangsForLift, posSimplifyPath, psWipeTower, psSkirtBrim,
-    // Fires from the GUI G-code export/post-process seam (PostProcessor.cpp), NOT from Print::process().
-    // At this step the plugin edits the exported G-code file in place; see SlicingPipelinePluginCapability for the full contract.
-    psGCodePostProcess
-};
 
 // A PrintRegion object represents a group of volumes to print
 // sharing the same config (including the same assigned extruder(s))
@@ -916,15 +909,11 @@ private: // Prevents erroneous use by other classes.
     typedef std::pair<PrintObject *, bool>         PrintObjectInfo;
 
 public:
-    using SlicingPipelineHookFn = std::function<void(Print&, const PrintObject*, SlicingPipelineStepPlugin)>;
-    // Cross-layer injection (mirrors ConfigBase::set_resolve_capability_fn): the GUI/plugin
-    // layer registers a dispatcher; libslic3r stays free of any plugin/Python dependency.
-    static void set_slicing_pipeline_hook_fn(SlicingPipelineHookFn fn) { s_slicing_pipeline_hook_fn = std::move(fn); }
-
     Print() = default;
-	virtual ~Print() { this->clear(); }
+    virtual ~Print() { this->clear(); }
 
-	PrinterTechnology	technology() const noexcept override { return ptFFF; }
+    PrinterTechnology technology() const noexcept override { return ptFFF; }
+
 
     // Methods, which change the state of Print / PrintObject / PrintRegion.
     // The following methods are synchronized with process() and export_gcode(),
@@ -1294,12 +1283,6 @@ private:
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
 
-    static SlicingPipelineHookFn s_slicing_pipeline_hook_fn;
-    bool m_pipeline_plugin_active { false };
-    void run_pipeline_hook(SlicingPipelineStepPlugin step, const PrintObject* object) {
-        if (m_pipeline_plugin_active && s_slicing_pipeline_hook_fn)
-            s_slicing_pipeline_hook_fn(*this, object, step);
-    }
 
     PrintConfig                             m_config;
     PrintObjectConfig                       m_default_object_config;

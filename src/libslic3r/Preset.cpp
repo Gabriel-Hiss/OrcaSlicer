@@ -1561,15 +1561,6 @@ const std::vector<std::string>& Preset::printer_options()
     return s_opts;
 }
 
-const char* Preset::plugin_overrides_key(Type type)
-{
-    switch (type) {
-    case TYPE_PRINTER:  return "printer_plugin_config_overrides";
-    case TYPE_FILAMENT: return "filament_plugin_config_overrides";
-    default:            return "print_plugin_config_overrides";
-    }
-}
-
 PresetCollection::PresetCollection(Preset::Type type, const std::vector<std::string> &keys, const Slic3r::StaticPrintConfig &defaults, const std::string &default_name) :
     m_type(type),
     m_edited_preset(type, "", false),

@@ -985,11 +985,7 @@ void PrintConfigDef::init_common_params()
     def->tooltip = L("Select the network agent implementation for printer communication.");
     def->mode = comAdvanced;
     def->cli = ConfigOptionDef::nocli;
-    // Plugin-backed (see ConfigOptionDef::is_plugin_backed), but edited through the Choice widget above
-    // rather than a plugin_picker field.
-    def->plugin_type = "printer-connection";
     def->set_default_value(new ConfigOptionString(""));
-
     def = this->add("print_host", coString);
     def->label = L("Hostname, IP or URL");
     def->tooltip = L("Orca Slicer can upload G-code files to a printer host. This field should contain "
@@ -1086,17 +1082,12 @@ void PrintConfigDef::init_common_params()
         def->set_default_value(new ConfigOptionString());
     }
 
-    // One key per preset type (Preset::plugin_overrides_key), so the print, printer and filament
-    // overrides don't clobber each other when the presets merge into one full config. No handle_legacy
-    // migration from the shared "plugin_config_overrides" they replace: it only ever shipped in
-    // nightlies. Never a text field — GUIType::plugin_config renders a button opening PluginsConfigDialog.
+    // Legacy plugin capability overrides — preserved as hidden/inert serialized values for
+    // preset/3MF round-trip. No plugin_type, no plugin_config GUI, no capability resolution.
     for (const char* key : {"print_plugin_config_overrides", "printer_plugin_config_overrides", "filament_plugin_config_overrides"}) {
         def = this->add(key, coString);
         def->label = L("Capabilities");
-        def->tooltip = L("Configuration for the plugin capabilities this preset uses, overriding the global "
-                         "Capabilities configuration. Stored as a raw JSON array and edited through the dialog "
-                         "behind the button, never typed in directly.");
-        def->gui_type = ConfigOptionDef::GUIType::plugin_config;
+        def->tooltip = L("Legacy: configuration for plugin capabilities this preset used. Kept for round-trip, otherwise inert.");
         def->mode = comAdvanced;
         def->cli = ConfigOptionDef::nocli;
         def->set_default_value(new ConfigOptionString(""));
@@ -1106,6 +1097,7 @@ void PrintConfigDef::init_common_params()
 void PrintConfigDef::init_fff_params()
 {
     ConfigOptionDef* def;
+
 
     // Maximum extruder temperature, bumped to 1500 to support printing of glass.
     const int max_temp = 1500;
@@ -5614,20 +5606,19 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionString());
 
+    // Legacy: preserved as hidden/inert for round-trip. No plugin_picker, no plugin_type, no live dispatch.
     def = this->add("plugins", coStrings);
     def->label = L("Plugins Used");
-    def->tooltip = L("Plugin capabilities referenced by this preset, stored as name;uuid;capability.");
+    def->tooltip = L("Legacy: plugin capabilities referenced by this preset, kept for round-trip only.");
     def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
     def->set_default_value(new ConfigOptionStrings());
 
     def = this->add("slicing_pipeline_plugin", coStrings);
     def->label = L("Slicing Pipeline Plugin");
-    def->tooltip = L("Python plugin(s) invoked at each slicing pipeline step to read and modify intermediate slicing data, "
-                   "including a final G-code post-processing step. Research/experimental.");
-    def->gui_type = ConfigOptionDef::GUIType::plugin_picker;
-    def->plugin_type = "slicing-pipeline";
-    def->full_width = true;
+    def->tooltip = L("Legacy: Python plugin(s) invoked at slicing pipeline steps. Kept for round-trip, otherwise inert.");
     def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
     def->set_default_value(new ConfigOptionStrings());
 
     def = this->add("printer_model", coString);
@@ -9446,11 +9437,35 @@ std::set<std::string> filament_dev_options = {
 
 DynamicPrintConfig DynamicPrintConfig::full_print_config()
 {
-	return DynamicPrintConfig((const PrintRegionConfig&)FullPrintConfig::defaults());
+    DynamicPrintConfig cfg((const PrintRegionConfig&)FullPrintConfig::defaults());
+    // Legacy plugin fields are inert opaque values preserved for round-trip.
+    // They are defined in print_config_def but not in the static FullPrintConfig
+    // composition (PrintObject/PrintRegion/PrintConfig). Ensure they exist with
+    // empty defaults so cfg.option(...) never returns nullptr and missing-from-file
+    // remains empty without error.
+    for (const char *key : {"plugins", "slicing_pipeline_plugin",
+                            "print_plugin_config_overrides",
+                            "printer_plugin_config_overrides",
+                            "filament_plugin_config_overrides"}) {
+        if (!cfg.has(key))
+            cfg.option(key, true);
+    }
+    return cfg;
 }
 
 DynamicPrintConfig::DynamicPrintConfig(const StaticPrintConfig& rhs) : DynamicConfig(rhs, rhs.keys_ref())
 {
+    // Same guarantee for any direct construction from a StaticPrintConfig
+    // (e.g. FullPrintConfig defaults). Legacy keys defined in print_config_def
+    // must be present as empty inert values even when the static source does
+    // not contain them.
+    for (const char *key : {"plugins", "slicing_pipeline_plugin",
+                            "print_plugin_config_overrides",
+                            "printer_plugin_config_overrides",
+                            "filament_plugin_config_overrides"}) {
+        if (!this->has(key))
+            this->option(key, true);
+    }
 }
 
 DynamicPrintConfig* DynamicPrintConfig::new_from_defaults_keys(const std::vector<std::string> &keys)

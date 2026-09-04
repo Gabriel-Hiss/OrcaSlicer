@@ -76,8 +76,10 @@ using namespace nlohmann;
 #include "libslic3r/PNGReadWrite.hpp"
 #include "libslic3r/ObjColorUtils.hpp"
 
-#include "OrcaSlicer.hpp"
-//BBS: add exception handler for win32
+ #include "OrcaSlicer.hpp"
+ #include "slic3r/plugin/PluginManager.hpp"
+ #include "slic3r/plugin/hook/HookRuntime.hpp"
+ //BBS: add exception handler for win32
 #include <wx/stdpaths.h>
 #ifdef WIN32
 #include "dev-utils/BaseException.h"
@@ -1329,7 +1331,64 @@ int CLI::run(int argc, char **argv)
     }
     set_temporary_dir(temp_path);
 
-    // The Filament Track Switch flags are live-device state with no meaning in headless slicing;
+     // Hook plugin bootstrap: after setup/temp dir, before GUI/slicing/CLI dispatch.
+     // RAII guard ensures shutdown on all returns (GUI and CLI).
+     struct OrcaPluginSessionGuard {
+         OrcaPluginSessionGuard() {
+             bool ok = false;
+             std::string init_err;
+             try {
+                 ok = Slic3r::PluginManager::instance().initialize();
+             } catch (const std::exception& ex) {
+                 init_err = ex.what();
+                 BOOST_LOG_TRIVIAL(error) << "[orca-plugins] PluginManager initialize threw: " << init_err;
+                 try { boost::nowide::cerr << "[orca-plugins] PluginManager initialize threw: " << init_err << std::endl; } catch (...) {}
+             } catch (...) {
+                 init_err = "unknown exception";
+                 BOOST_LOG_TRIVIAL(error) << "[orca-plugins] PluginManager initialize threw unknown";
+                 try { boost::nowide::cerr << "[orca-plugins] PluginManager initialize threw unknown" << std::endl; } catch (...) {}
+             }
+             if (!ok) {
+                 std::string hook_err = Slic3r::Hook::HookRuntime::Instance().GetLastError();
+                 if (hook_err.empty()) hook_err = init_err;
+                 if (hook_err.empty()) hook_err = "initialize() returned false without details";
+                 BOOST_LOG_TRIVIAL(error) << "[orca-plugins] PluginManager initialize failed: " << hook_err;
+                 try { boost::nowide::cerr << "[orca-plugins] PluginManager initialize failed: " << hook_err << std::endl; } catch (...) {}
+             } else {
+                 if (!Slic3r::Hook::HookRuntime::Instance().IsInitialized()) {
+                     std::string hook_err = Slic3r::Hook::HookRuntime::Instance().GetLastError();
+                     if (!hook_err.empty()) {
+                         BOOST_LOG_TRIVIAL(error) << "[orca-plugins] HookRuntime not initialized after initialize(): " << hook_err;
+                         try { boost::nowide::cerr << "[orca-plugins] HookRuntime not initialized: " << hook_err << std::endl; } catch (...) {}
+                     } else {
+                         BOOST_LOG_TRIVIAL(warning) << "[orca-plugins] HookRuntime not initialized after initialize() (no details)";
+                         try { boost::nowide::cerr << "[orca-plugins] HookRuntime not initialized (no details)" << std::endl; } catch (...) {}
+                     }
+                 } else {
+                     BOOST_LOG_TRIVIAL(info) << "[orca-plugins] HookRuntime initialized build_id=" << Slic3r::PluginManager::instance().current_build_id();
+                 }
+                 Slic3r::PluginManager::instance().autoload_enabled_plugins();
+                 auto descs = Slic3r::PluginManager::instance().get_plugin_descriptors(true);
+                 size_t enabled = 0, loaded = 0;
+                 for (auto &d : descs) if (d.enabled) ++enabled;
+                 for (auto &d : descs) if (Slic3r::PluginManager::instance().is_plugin_loaded(d.id)) ++loaded;
+                 BOOST_LOG_TRIVIAL(info) << "[orca-plugins] autoload summary: " << loaded << "/" << enabled << " enabled plugins loaded (" << descs.size() << " total discovered)";
+                 for (auto &d : descs) {
+                     if (d.enabled && !Slic3r::PluginManager::instance().is_plugin_loaded(d.id)) {
+                         std::string why = Slic3r::PluginManager::instance().get_plugin_load_error(d.id);
+                         if (!why.empty()) {
+                             BOOST_LOG_TRIVIAL(error) << "[orca-plugins] plugin '" << d.id << "' not loaded: " << why;
+                             try { boost::nowide::cerr << "[orca-plugins] plugin '" << d.id << "' not loaded: " << why << std::endl; } catch (...) {}
+                         }
+                     }
+                 }
+             }
+         }
+         ~OrcaPluginSessionGuard() {
+             Slic3r::PluginManager::instance().shutdown();
+         }
+     } orca_plugin_session;
+     // The Filament Track Switch flags are live-device state with no meaning in headless slicing;
     // default both off unless explicitly provided on the command line, so an old 3MF that had
     // them enabled still slices without the switch behavior.
     if (!m_extra_config.has("has_filament_switcher"))

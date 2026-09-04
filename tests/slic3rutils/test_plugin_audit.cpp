@@ -1,338 +1,336 @@
 #include <catch2/catch_all.hpp>
 
-#include <libslic3r/Utils.hpp>
-#include <libslic3r/libslic3r.h>         // GCODEVIEWER_APP_KEY, SLIC3R_APP_KEY (via libslic3r_version.h)
-#include <slic3r/plugin/PluginAuditManager.hpp>
-#include <slic3r/Utils/OrcaCloudServiceAgent.hpp> // secret_constants::USER_SECRET_FILENAME
+#include <slic3r/plugin/package/PluginMetadata.hpp>
 
-#include "plugin_test_utils.hpp"
-
-#include <boost/filesystem.hpp>
+#include <nlohmann/json.hpp>
 
 #include <string>
 
-using namespace Slic3r;
-namespace fs = boost::filesystem;
+using namespace Slic3r::Plugin::Package;
 
-namespace {
-
-// Seed the deny registry with the same list install_hook() uses. Both draw from
-// PluginAuditManager::default_denied_filenames(), so the test and production seeding cannot
-// drift apart. The registry is a process singleton, so repeated seeding only appends harmless
-// duplicates; matching is unaffected.
-void seed_denied_names()
+static nlohmann::json make_valid_json()
 {
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-    for (const auto& name : PluginAuditManager::default_denied_filenames())
-        mgr.add_denied_filename(name);
+    nlohmann::json j;
+    j["schema"] = 1;
+    j["id"] = "org.example.testplugin";
+    j["name"] = "Test Plugin";
+    j["version"] = "1.2.3";
+    j["runtime"] = "native";
+    j["language"] = "cpp";
+    j["hook_abi"] = 1;
+    j["targets"] = nlohmann::json::array();
+    nlohmann::json t;
+    t["os"] = "windows";
+    t["arch"] = "x86_64";
+    t["build_id"] = "windows-x86_64-123e4567-e89b-12d3-a456-426614174000-1-abcdef123456";
+    j["targets"].push_back(t);
+    return j;
 }
 
-// Seed the keyword registry with the same list install_hook() uses. Same rationale as
-// seed_denied_names(): a process-singleton registry, seeded from the single shared source so
-// production and tests cannot drift apart.
-void seed_denied_keywords()
+TEST_CASE("plugin id validation rejects path traversal and malformed ids", "[PluginMetadata]")
 {
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-    for (const auto& keyword : PluginAuditManager::default_denied_path_keywords())
-        mgr.add_denied_path_keyword(keyword);
+    CHECK(is_valid_plugin_id("abc"));
+    CHECK(is_valid_plugin_id("a1b2_c3.d-4"));
+    CHECK(is_valid_plugin_id("org.example.plugin_v2"));
+    CHECK_FALSE(is_valid_plugin_id(""));
+    CHECK_FALSE(is_valid_plugin_id("ab")); // too short
+    CHECK_FALSE(is_valid_plugin_id("Abc")); // uppercase
+    CHECK_FALSE(is_valid_plugin_id("org/example"));
+    CHECK_FALSE(is_valid_plugin_id("org\\example"));
+    CHECK_FALSE(is_valid_plugin_id("../escape"));
+    CHECK_FALSE(is_valid_plugin_id("a/b"));
+    CHECK_FALSE(is_valid_plugin_id("a..b")); // contains ..
+    CHECK_FALSE(is_valid_plugin_id(".."));
+    CHECK_FALSE(is_valid_plugin_id("a b")); // space
+    std::string long_id(129, 'a');
+    CHECK_FALSE(is_valid_plugin_id(long_id));
+    CHECK(is_valid_plugin_id(std::string(128, 'a')));
 }
 
-} // namespace
-
-TEST_CASE("Plugin audit denies app config and token filenames anywhere", "[audit]")
+TEST_CASE("plugin metadata valid schema passes", "[PluginMetadata]")
 {
-    seed_denied_names();
-    const PluginAuditManager& mgr = PluginAuditManager::instance();
+    auto j = make_valid_json();
+    PluginMetadata out;
+    std::string err;
+    REQUIRE(validate_plugin_metadata_json(j, out, err));
+    CHECK(err.empty());
+    CHECK(out.id == "org.example.testplugin");
+    CHECK(out.version == "1.2.3");
+    CHECK(out.runtime == "native");
+    CHECK(out.language == "cpp");
+    CHECK(out.targets.size() == 1);
+}
 
-    SECTION("the seeded names are denied by their base name")
-    {
-        CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".conf")));
-        CHECK(mgr.is_denied_filename(fs::path(GCODEVIEWER_APP_KEY ".conf")));
-        CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".ini")));
-        CHECK(mgr.is_denied_filename(fs::path(GCODEVIEWER_APP_KEY ".ini")));
-        CHECK(mgr.is_denied_filename(fs::path(secret_constants::USER_SECRET_FILENAME)));
-    }
-
-    SECTION("companions holding the same secrets are denied by the prefix rule")
-    {
-        CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".conf.bak")));
-        CHECK(mgr.is_denied_filename(fs::path(std::string(secret_constants::USER_SECRET_FILENAME) + ".tmp")));
-        // Windows alternate data streams share the same base name.
-        CHECK(mgr.is_denied_filename(fs::path(SLIC3R_APP_KEY ".conf:stream")));
-    }
-
-    SECTION("the denial ignores the directory the file lives in")
-    {
-        CHECK(mgr.is_denied_filename(fs::path("/tmp") / (SLIC3R_APP_KEY ".conf")));
-        CHECK(mgr.is_denied_filename(fs::path("/some/plugin/dir") / (SLIC3R_APP_KEY ".conf")));
-        // Traversal is handled for free: filename() of the path below is already the denied name.
-        CHECK(mgr.is_denied_filename(fs::path(data_dir()) / "plugins" / ".." / (SLIC3R_APP_KEY ".conf")));
-    }
-
-    SECTION("matching is case-insensitive on every platform")
-    {
-        CHECK(mgr.is_denied_filename(fs::path("orcaslicer.conf")));
-        CHECK(mgr.is_denied_filename(fs::path("ORCASLICER.CONF")));
-        CHECK(mgr.is_denied_filename(fs::path("ORCA_REFRESH_TOKEN.SEC")));
-    }
-
-    SECTION("an unrelated name that merely shares a stem is not denied")
-    {
-        // The prefix is the full registered name ("OrcaSlicer.conf"), not the stem "OrcaSlicer",
-        // so a sibling file with a different extension/suffix stays allowed.
-        CHECK_FALSE(mgr.is_denied_filename(fs::path(data_dir()) / (SLIC3R_APP_KEY "_other.txt")));
-        CHECK_FALSE(mgr.is_denied_filename(fs::path(data_dir()) / (SLIC3R_APP_KEY ".json")));
-        CHECK_FALSE(mgr.is_denied_filename(fs::path("orca_refresh_token.txt")));
-    }
-
-    SECTION("an empty path is not denied")
-    {
-        CHECK_FALSE(mgr.is_denied_filename(fs::path()));
+TEST_CASE("plugin metadata rejects missing required fields", "[PluginMetadata]")
+{
+    const std::vector<std::string> required = {"schema","id","name","version","runtime","language","hook_abi","targets"};
+    for (auto &field : required) {
+        auto j = make_valid_json();
+        j.erase(field);
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring(field));
     }
 }
 
-TEST_CASE("Plugin audit deny beats allowed roots", "[audit]")
+TEST_CASE("plugin metadata rejects unknown fields", "[PluginMetadata]")
 {
-    ScopedDataDir data_dir_guard("plugin-audit-deny");
-    seed_denied_names();
+    auto j = make_valid_json();
+    j["unknown_field"] = 123;
+    PluginMetadata out;
+    std::string err;
+    REQUIRE_FALSE(validate_plugin_metadata_json(j, out, err));
+    CHECK_THAT(err, Catch::Matchers::ContainsSubstring("unknown field"));
 
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-    // Reproduce install_hook()'s grant: data_dir() is a global allowed root, so both the app
-    // config and the token would otherwise be reachable simply by living inside it.
-    mgr.add_global_allowed_root(data_dir());
+    auto j2 = make_valid_json();
+    j2["targets"][0]["extra"] = "bad";
+    REQUIRE_FALSE(validate_plugin_metadata_json(j2, out, err));
+    CHECK_THAT(err, Catch::Matchers::ContainsSubstring("unknown field"));
+}
 
-    // Enter a plugin context. The deny must hold even inside a globally allowed root.
-    ScopedPluginAuditContext ctx("test_plugin", "");
+TEST_CASE("plugin metadata duplicate keys are rejected", "[PluginMetadata]")
+{
+    // Raw JSON with duplicate id key
+    std::string raw = R"({"schema":1,"id":"a.b.c","id":"a.b.c","name":"Test Plugin","version":"1.0.0","runtime":"native","language":"cpp","hook_abi":1,"targets":[{"os":"windows","arch":"x86_64","build_id":"windows-x86_64-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-1-111111111111"}]})";
+    PluginMetadata out;
+    std::string err;
+    REQUIRE_FALSE(validate_plugin_metadata_json(raw, out, err));
+    CHECK_THAT(err, Catch::Matchers::ContainsSubstring("duplicate key"));
 
-    const fs::path conf  = fs::path(data_dir()) / (SLIC3R_APP_KEY ".conf");
-    const fs::path token = fs::path(data_dir()) / secret_constants::USER_SECRET_FILENAME;
+    std::string raw2 = R"({"schema":1,"id":"org.example.test","name":"Test Plugin","version":"1.0.0","runtime":"native","language":"cpp","hook_abi":1,"hook_abi":1,"targets":[{"os":"windows","arch":"x86_64","build_id":"windows-x86_64-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee-1-111111111111"}]})";
+    REQUIRE_FALSE(validate_plugin_metadata_json(raw2, out, err));
+    CHECK_THAT(err, Catch::Matchers::ContainsSubstring("duplicate key"));
+}
 
-    SECTION("a non-denied file inside the allowed root is writable (root really grants writes)")
+TEST_CASE("plugin metadata semver validation", "[PluginMetadata]")
+{
+    auto check_version = [](const std::string &v, bool expect_ok) {
+        auto j = make_valid_json();
+        j["version"] = v;
+        PluginMetadata out;
+        std::string err;
+        bool ok = validate_plugin_metadata_json(j, out, err);
+        CHECK(ok == expect_ok);
+        CHECK(is_valid_semver(v) == expect_ok);
+    };
+    check_version("1.0.0", true);
+    check_version("0.1.0", true);
+    check_version("1.2.3-alpha", true);
+    check_version("1.2.3+build.1", true);
+    check_version("1.2.3-alpha+001", true);
+    check_version("10.20.30", true);
+    check_version("", false);
+    check_version("1.0", false);
+    check_version("v1.0.0", false);
+    check_version("1.0.0.0", false);
+    check_version("01.0.0", false);
+    check_version("1.0.0-", false);
+}
+
+TEST_CASE("plugin metadata runtime language compatibility", "[PluginMetadata]")
+{
+    auto check = [](const std::string &runtime, const std::string &language, bool expect_ok, bool with_entry = false) {
+        auto j = make_valid_json();
+        j["runtime"] = runtime;
+        j["language"] = language;
+        if (with_entry) j["entry_class"] = "com.example.Foo";
+        else j.erase("entry_class");
+        PluginMetadata out;
+        std::string err;
+        bool ok = validate_plugin_metadata_json(j, out, err);
+        if (expect_ok) {
+            CHECK(ok);
+        } else {
+            CHECK_FALSE(ok);
+        }
+    };
+    // native requires cpp|rust, no entry_class
+    check("native", "cpp", true);
+    check("native", "rust", true);
+    check("native", "java", false);
+    check("native", "kotlin", false);
+    check("native", "cpp", false, true); // entry_class must not be present
+
+    // jvm requires java|kotlin with entry_class
+    check("jvm", "java", false); // missing entry_class
+    check("jvm", "kotlin", false);
+    check("jvm", "java", true, true);
+    check("jvm", "kotlin", true, true);
+    check("jvm", "cpp", false, true);
+    check("jvm", "rust", false, true);
+
+    // entry_class slash form rejected
     {
-        AuditDecision decision = mgr.check_open((fs::path(data_dir()) / "plugin_data.txt").string(), "w");
-        CHECK(decision.allowed);
-    }
-
-    SECTION("a file outside the allowed root is blocked for reads as well as writes")
-    {
-        AuditDecision decision = mgr.check_open((fs::path(data_dir()).parent_path() / "outside.txt").string(), "r");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "outside allowed root");
-    }
-
-    SECTION("writing the app config is blocked despite data_dir() being allowed")
-    {
-        AuditDecision decision = mgr.check_open(conf.string(), "w");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "denied filename");
-    }
-
-    SECTION("reading the app config is blocked despite the allowed root")
-    {
-        AuditDecision decision = mgr.check_open(conf.string(), "r");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "denied filename");
-    }
-
-    SECTION("reading the cloud refresh token is blocked")
-    {
-        AuditDecision decision = mgr.check_open(token.string(), "r");
-        CHECK_FALSE(decision.allowed);
-    }
-
-    SECTION("the token staging companion (.tmp) is blocked too")
-    {
-        AuditDecision decision = mgr.check_open((token.string() + ".tmp"), "w");
-        CHECK_FALSE(decision.allowed);
-    }
-
-    SECTION("a traversal path resolving to the config is blocked")
-    {
-        const fs::path traversal = fs::path(data_dir()) / "plugins" / ".." / (SLIC3R_APP_KEY ".conf");
-        AuditDecision  decision  = mgr.check_open(traversal.string(), "r");
-        CHECK_FALSE(decision.allowed);
+        auto j = make_valid_json();
+        j["runtime"] = "jvm";
+        j["language"] = "java";
+        j["entry_class"] = "com/example/Foo";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring("dot-separated"));
     }
 }
 
-TEST_CASE("Plugin audit deny beats a plugin's own scoped root", "[audit]")
+TEST_CASE("plugin metadata hook_abi and schema version must be 1", "[PluginMetadata]")
 {
-    ScopedDataDir data_dir_guard("plugin-audit-scoped");
-    seed_denied_names();
-
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-
-    // A plugin's private directory, granted as a scoped root while it runs.
-    const fs::path plugin_dir = fs::path(data_dir()) / "plugins" / "test_plugin";
-    fs::create_directories(plugin_dir);
-
-    ScopedPluginAuditContext ctx("test_plugin", "");
-    mgr.add_scoped_allowed_root(plugin_dir);
-
-    SECTION("the plugin's own non-denied file opens for read and write")
     {
-        const std::string own_file = (plugin_dir / "state.json").string();
-        CHECK(mgr.check_open(own_file, "r").allowed);
-        CHECK(mgr.check_open(own_file, "w").allowed);
+        auto j = make_valid_json();
+        j["hook_abi"] = 2;
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring("hook_abi"));
     }
-
-    SECTION("a denied name stashed inside the plugin's own root is still blocked")
     {
-        const std::string smuggled = (plugin_dir / (SLIC3R_APP_KEY ".conf")).string();
-        AuditDecision      decision = mgr.check_open(smuggled, "w");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "denied filename");
+        auto j = make_valid_json();
+        j["schema"] = 2;
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring("schema"));
     }
 }
 
-TEST_CASE("Plugin audit does not constrain non-plugin code", "[audit]")
+TEST_CASE("plugin metadata targets validation", "[PluginMetadata]")
 {
-    ScopedDataDir data_dir_guard("plugin-audit-noplugin");
-    seed_denied_names();
-
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-    mgr.clear_current_plugin(); // no plugin context: this is OrcaSlicer's own C++/internal Python
-
-    const fs::path conf = fs::path(data_dir()) / (SLIC3R_APP_KEY ".conf");
-
-    // The name is still recognised as denied...
-    CHECK(mgr.is_denied_filename(conf));
-    // ...but with no current plugin the access check allows it: denies constrain plugin code only.
-    CHECK(mgr.check_open(conf.string(), "w").allowed);
-    CHECK(mgr.check_open(conf.string(), "r").allowed);
-}
-
-TEST_CASE("Plugin audit denies secret/certificate/config-like paths by keyword", "[audit]")
-{
-    seed_denied_keywords();
-    const PluginAuditManager& mgr = PluginAuditManager::instance();
-
-    SECTION("a 'secrets' directory component is denied")
+    // empty targets
     {
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/secrets/api_key.json")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/secret/token.txt")));
+        auto j = make_valid_json();
+        j["targets"] = nlohmann::json::array();
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-
-    SECTION("a 'certificate(s)' directory component is denied")
+    // invalid os
     {
-        CHECK(mgr.is_denied_path_keyword(fs::path("/resources/cert/slicer_base64.cer")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/resources/certificates/ca.pem")));
+        auto j = make_valid_json();
+        j["targets"][0]["os"] = "macos";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring("os"));
     }
-
-    SECTION("a 'conf'/'config' directory or file component is denied")
+    // invalid arch
     {
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/conf/settings.json")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/config/settings.json")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/plugin.conf")));
+        auto j = make_valid_json();
+        j["targets"][0]["arch"] = "arm64";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-
-    SECTION("matching is case-insensitive")
+    // duplicate build_id
     {
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/SECRETS/token.txt")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/resources/CertBundle/ca.pem")));
-        CHECK(mgr.is_denied_path_keyword(fs::path("/plugin/CONFIG.JSON")));
+        auto j = make_valid_json();
+        j["targets"].push_back(j["targets"][0]);
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_THAT(err, Catch::Matchers::ContainsSubstring("duplicate"));
     }
-
-    SECTION("matching is not limited to the base name -- any ancestor component counts")
+    // build_id with path traversal
     {
-        CHECK(mgr.is_denied_path_keyword(fs::path("/data/secrets/nested/deep/file.txt")));
+        auto j = make_valid_json();
+        j["targets"][0]["build_id"] = "../escape";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-
-    SECTION("an unrelated path is not denied")
     {
-        CHECK_FALSE(mgr.is_denied_path_keyword(fs::path("/plugin/output/model.gcode")));
-        CHECK_FALSE(mgr.is_denied_path_keyword(fs::path("/plugin/storage/state.json")));
+        auto j = make_valid_json();
+        j["targets"][0]["build_id"] = "windows/x64";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-
-    SECTION("an empty path is not denied")
+    // build_id whitespace
     {
-        CHECK_FALSE(mgr.is_denied_path_keyword(fs::path()));
+        auto j = make_valid_json();
+        j["targets"][0]["build_id"] = "windows x86_64 foo";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-}
-
-TEST_CASE("Plugin audit is_denied_path combines the filename and keyword registries", "[audit]")
-{
-    seed_denied_names();
-    seed_denied_keywords();
-    const PluginAuditManager& mgr = PluginAuditManager::instance();
-
-    SECTION("a filename-registry match is denied")
+    // too many targets
     {
-        CHECK(mgr.is_denied_path(fs::path(SLIC3R_APP_KEY ".conf")));
-    }
-
-    SECTION("a keyword-registry match is denied")
-    {
-        CHECK(mgr.is_denied_path(fs::path("/plugin/secrets/token.txt")));
-    }
-
-    SECTION("a path matching neither registry is not denied")
-    {
-        CHECK_FALSE(mgr.is_denied_path(fs::path("/plugin/output/model.gcode")));
+        auto j = make_valid_json();
+        j["targets"] = nlohmann::json::array();
+        for (int i = 0; i < 17; ++i) {
+            nlohmann::json t;
+            t["os"] = "windows";
+            t["arch"] = "x86_64";
+            t["build_id"] = "build-" + std::to_string(i);
+            j["targets"].push_back(t);
+        }
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
 }
 
-TEST_CASE("Plugin audit a read-only allowed root blocks writes but not reads", "[audit]")
+TEST_CASE("plugin metadata path traversal in id is rejected", "[PluginMetadata]")
 {
-    ScopedDataDir      data_dir_guard("plugin-audit-readonly");
-    ScopedResourcesDir resources_dir_guard("plugin-audit-readonly-resources");
-    seed_denied_names();
-    seed_denied_keywords();
-
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-    mgr.add_global_allowed_root(resources_dir(), /*allow_write=*/false);
-
-    ScopedPluginAuditContext ctx("test_plugin", "");
-
-    const fs::path readonly_file = fs::path(resources_dir()) / "profiles" / "vendor.json";
-
-    SECTION("a read inside the read-only root is allowed")
-    {
-        CHECK(mgr.check_open(readonly_file.string(), "r").allowed);
-    }
-
-    SECTION("a write inside the read-only root is blocked")
-    {
-        AuditDecision decision = mgr.check_open(readonly_file.string(), "w");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "outside allowed root");
-    }
-
-    SECTION("a create inside the read-only root is blocked")
-    {
-        AuditDecision decision = mgr.check_path_access(readonly_file, /*is_write=*/true);
-        CHECK_FALSE(decision.allowed);
-    }
-
-    SECTION("the bundled cert underneath the read-only root is denied even for reads")
-    {
-        const fs::path cert = fs::path(resources_dir()) / "cert" / "slicer_base64.cer";
-        AuditDecision  decision = mgr.check_open(cert.string(), "r");
-        CHECK_FALSE(decision.allowed);
-        CHECK(decision.reason == "denied path keyword");
+    const std::vector<std::string> bad_ids = {
+        "../evil",
+        "a/b",
+        "a\\b",
+        "a..b",
+        "..",
+        "org..example",
+        "/absolute",
+        "a/b/c"
+    };
+    for (auto &bad : bad_ids) {
+        auto j = make_valid_json();
+        j["id"] = bad;
+        PluginMetadata out;
+        std::string err;
+        INFO("id: " << bad);
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+        CHECK_FALSE(is_valid_plugin_id(bad));
     }
 }
 
-TEST_CASE("Plugin audit a scoped root can also be registered read-only", "[audit]")
+TEST_CASE("plugin metadata entry_class required for jvm and forbidden for native", "[PluginMetadata]")
 {
-    ScopedDataDir data_dir_guard("plugin-audit-scoped-readonly");
-    seed_denied_names();
-    seed_denied_keywords();
-
-    PluginAuditManager& mgr = PluginAuditManager::instance();
-
-    const fs::path readonly_dir = fs::path(data_dir()) / "readonly_scope";
-    fs::create_directories(readonly_dir);
-
-    ScopedPluginAuditContext ctx("test_plugin", "");
-    mgr.add_scoped_allowed_root(readonly_dir, /*allow_write=*/false);
-
-    SECTION("a read inside the scoped read-only root is allowed")
+    // native with entry_class present
     {
-        CHECK(mgr.check_open((readonly_dir / "vendor.json").string(), "r").allowed);
+        auto j = make_valid_json();
+        j["runtime"] = "native";
+        j["language"] = "cpp";
+        j["entry_class"] = "com.example.Foo";
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
-
-    SECTION("a write inside the scoped read-only root is blocked")
+    // jvm without entry_class
     {
-        CHECK_FALSE(mgr.check_open((readonly_dir / "vendor.json").string(), "w").allowed);
+        auto j = make_valid_json();
+        j["runtime"] = "jvm";
+        j["language"] = "java";
+        j.erase("entry_class");
+        PluginMetadata out;
+        std::string err;
+        CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
     }
+}
+
+TEST_CASE("safe filename and path component validation", "[PluginMetadata]")
+{
+    CHECK(is_safe_filename("plugin.dll"));
+    CHECK(is_safe_filename("my-plugin_1.0.jar"));
+    CHECK_FALSE(is_safe_filename(""));
+    CHECK_FALSE(is_safe_filename("../evil.dll"));
+    CHECK_FALSE(is_safe_filename("a/b.dll"));
+    CHECK_FALSE(is_safe_filename("a\\b.dll"));
+    CHECK_FALSE(is_safe_filename("."));
+    CHECK_FALSE(is_safe_filename(".."));
+    CHECK_FALSE(is_safe_filename("a:b.dll"));
+    CHECK_FALSE(is_safe_filename(std::string("a\0b", 3)));
+
+    CHECK(is_safe_path_component("abc"));
+    CHECK(is_safe_path_component("org.example.plugin_v2"));
+    CHECK_FALSE(is_safe_path_component("../escape"));
+    CHECK_FALSE(is_safe_path_component("Abc"));
 }

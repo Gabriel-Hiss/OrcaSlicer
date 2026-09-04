@@ -1,153 +1,157 @@
 #include <catch2/catch_all.hpp>
 
-#include <libslic3r/Utils.hpp>
-#include <slic3r/plugin/PluginConfig.hpp>
-#include <slic3r/plugin/PluginManager.hpp>
-#include <slic3r/plugin/PythonInterpreter.hpp>
-#include <slic3r/plugin/PythonPluginInterface.hpp>
-
-#include "fff_print/test_helpers.hpp"
-#include "plugin_test_utils.hpp"
+#include <libslic3r/Config.hpp>
+#include <libslic3r/PrintConfig.hpp>
+#include <libslic3r/Preset.hpp>
+#include <libslic3r/PresetBundle.hpp>
 
 #include <boost/filesystem.hpp>
+#include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
-#include <pybind11/embed.h>
 
 #include <fstream>
 #include <string>
+#include <map>
 
 using namespace Slic3r;
-using namespace Slic3r::Test;
 namespace fs = boost::filesystem;
-using json   = nlohmann::json;
+using json = nlohmann::json;
 
-// End-to-end coverage of a slicing-pipeline capability reading its own config: the loader seeds the
-// store from the capability's get_default_config() hook, and the real dispatch
-// (execute_capabilities_from_refs -> hook -> GIL -> trampoline) lets the plugin read back whatever
-// the host has stored, through self.get_config(). A break anywhere in that chain makes plugins
-// silently run on their built-in defaults, which is invisible to the plugin author (Twistify
-// incident, 2026-07-17).
-//
-// Note this is deliberately NOT ctx.config_value(): that reads the slicer's print config, not the
-// plugin's own config.
-
-namespace {
-
-struct ScopedPluginManager
+TEST_CASE("Preset and PrintConfig keep legacy fields as inert opaque data", "[Preset][Legacy]")
 {
-    bool initialized = false;
-
-    ScopedPluginManager() { initialized = PluginManager::instance().initialize(); }
-    ~ScopedPluginManager()
-    {
-        PluginManager::instance().shutdown();
-        PythonInterpreter::instance().shutdown();
+    DynamicPrintConfig cfg = DynamicPrintConfig::full_print_config();
+    for (auto key : {"plugins", "slicing_pipeline_plugin", "print_plugin_config_overrides",
+                     "printer_plugin_config_overrides", "filament_plugin_config_overrides"}) {
+        INFO("checking key: " << key);
+        CHECK(cfg.def()->get(key) != nullptr);
     }
-};
-
-const char* const CONFIG_PROBE_SOURCE = R"PY(# /// script
-# requires-python = ">=3.12"
-#
-# [tool.orcaslicer.plugin]
-# name = "Config Probe"
-# description = "Echoes its own config back to the test"
-# author = "OrcaSlicer"
-# version = "1.0"
-# type = "slicing-pipeline"
-# ///
-import json
-
-import orca
-
-class ConfigEcho(orca.slicing.SlicingPipelineCapabilityBase):
-    def get_name(self):
-        return "ConfigEcho"
-
-    def get_default_config(self):
-        return {"alpha": "1.25", "beta": "hello"}
-
-    def execute(self, ctx):
-        if ctx.step != orca.slicing.Step.posSlice or ctx.object is None:
-            return orca.ExecutionResult.success()
-        try:
-            text = repr(sorted(json.loads(self.get_config()).items()))
-        except Exception as e:  # what plugins' defaults-fallback code swallows silently
-            text = "config-error: " + repr(e)
-        orca._probe_config = text  # read back by the test through pybind
-        return orca.ExecutionResult.success("config probed")
-
-@orca.plugin
-class ConfigProbePackage(orca.base):
-    def register_capabilities(self):
-        orca.register_capability(ConfigEcho)
-)PY";
-
-fs::path write_plugin(const std::string& stem, const std::string& source)
-{
-    const fs::path plugin_dir = fs::path(get_orca_plugins_dir()) / stem;
-    fs::create_directories(plugin_dir);
-
-    std::ofstream out((plugin_dir / (stem + ".py")).string(), std::ios::binary);
-    out << source;
-    out.close();
-
-    return plugin_dir;
+    CHECK(cfg.option<ConfigOptionString>("print_plugin_config_overrides") != nullptr);
+    CHECK(cfg.option<ConfigOptionString>("printer_plugin_config_overrides") != nullptr);
+    CHECK(cfg.option<ConfigOptionString>("filament_plugin_config_overrides") != nullptr);
+    CHECK(cfg.option<ConfigOptionStrings>("plugins") != nullptr);
+    CHECK(cfg.option<ConfigOptionStrings>("slicing_pipeline_plugin") != nullptr);
 }
 
-} // namespace
-
-TEST_CASE("slicing-pipeline dispatch delivers the stored config to self.get_config()", "[slicing_pipeline][PluginConfig][Python]")
+TEST_CASE("legacy pipeline and overrides survive Preset config save and reload", "[Preset][Legacy]")
 {
-    ScopedPluginManager plugin_system;
-    if (!plugin_system.initialized)
-        SKIP("Bundled Python interpreter unavailable: " + PythonInterpreter::instance().last_error());
+    Preset preset(Preset::TYPE_PRINT, "test-legacy-preset");
+    preset.config = DynamicPrintConfig::full_print_config();
 
-    ScopedDataDir data_dir_guard("pipeline-config");
-    write_plugin("ConfigProbe", CONFIG_PROBE_SOURCE);
+    preset.config.set_key_value("plugins", new ConfigOptionStrings({"plugA;;hook1", "plugB;;hook2"}));
+    preset.config.set_key_value("slicing_pipeline_plugin", new ConfigOptionStrings({"hook1"}));
+    preset.config.set_key_value("print_plugin_config_overrides", new ConfigOptionString(R"({"alpha":1,"beta":"x"})"));
+    preset.config.set_key_value("printer_plugin_config_overrides", new ConfigOptionString(R"([])"));
+    preset.config.set_key_value("filament_plugin_config_overrides", new ConfigOptionString(R"("keep")"));
 
-    PluginManager& manager = PluginManager::instance();
-    manager.get_config().load(); // reset the singleton's store against the empty temp data dir
-    manager.discover_plugins(/*async=*/false, /*clear=*/true);
-
-    std::string error;
-    manager.load_plugin("ConfigProbe", /*skip_deps=*/true, {});
-    REQUIRE(manager.wait_for_plugin_load("ConfigProbe", std::chrono::seconds(120), error));
-    INFO("load error: " << error);
-    REQUIRE(manager.is_plugin_loaded("ConfigProbe"));
-
-    const PluginCapabilityId id{PluginCapabilityType::SlicingPipeline, "ConfigEcho", "ConfigProbe"};
-
-    // Loading seeds the store from the capability's get_default_config() hook, so a plugin has a
-    // config before anyone has opened the Config tab.
-    const auto seeded = manager.get_config().get_config(id);
-    REQUIRE(seeded);
-    CHECK(seeded->config == json({{"alpha", "1.25"}, {"beta", "hello"}}));
-
-    // What editing the config in the Config tab does: the value the plugin must actually run on.
-    REQUIRE(manager.get_config().store_capability_config(id, json({{"alpha", "9.5"}, {"beta", "hello"}})));
-
-    // Slice with the capability selected, exactly as a preset would reference it.
-    Print print;
-    Model model;
-    auto  config = DynamicPrintConfig::full_print_config();
-    config.set_key_value("slicing_pipeline_plugin", new ConfigOptionStrings({"ConfigEcho"}));
-    config.set_key_value("plugins", new ConfigOptionStrings({"ConfigProbe;;ConfigEcho"}));
-    init_print({cube(20)}, print, model, config);
-    print.process();
-
-    std::string observed = "<capability never executed>";
-    {
-        PythonGILState gil;
-        REQUIRE(static_cast<bool>(gil));
-        pybind11::module_ orca = pybind11::module_::import("orca");
-        if (pybind11::hasattr(orca, "_probe_config"))
-            observed = orca.attr("_probe_config").cast<std::string>();
+    std::map<std::string, std::string> smap;
+    for (auto key : {"plugins", "slicing_pipeline_plugin", "print_plugin_config_overrides",
+                     "printer_plugin_config_overrides", "filament_plugin_config_overrides"}) {
+        smap[key] = preset.config.option(key)->serialize();
     }
-    INFO("config observed by Python: " << observed);
-    // The edited value arrived, not the seeded default: the host's store is what reaches the plugin.
-    CHECK(observed.find("'alpha', '9.5'") != std::string::npos);
-    CHECK(observed.find("'beta', 'hello'") != std::string::npos);
-    CHECK(observed.find("1.25") == std::string::npos);
 
-    manager.unload_plugin("ConfigProbe");
+    Preset reloaded(Preset::TYPE_PRINT, "test-legacy-preset");
+    reloaded.config = DynamicPrintConfig::full_print_config();
+    reloaded.config.load_string_map(smap, ForwardCompatibilitySubstitutionRule::Disable);
+
+    CHECK(reloaded.config.option<ConfigOptionStrings>("plugins")->values == std::vector<std::string>{"plugA;;hook1", "plugB;;hook2"});
+    CHECK(reloaded.config.option<ConfigOptionStrings>("slicing_pipeline_plugin")->values == std::vector<std::string>{"hook1"});
+    CHECK(reloaded.config.option<ConfigOptionString>("print_plugin_config_overrides")->value == R"({"alpha":1,"beta":"x"})");
+    CHECK(reloaded.config.option<ConfigOptionString>("printer_plugin_config_overrides")->value == R"([])");
+    CHECK(reloaded.config.option<ConfigOptionString>("filament_plugin_config_overrides")->value == R"("keep")");
+}
+
+TEST_CASE("legacy override keys are literal strings and live on correct preset types", "[Preset][Legacy]")
+{
+    const std::string k_print    = "print_plugin_config_overrides";
+    const std::string k_printer  = "printer_plugin_config_overrides";
+    const std::string k_filament = "filament_plugin_config_overrides";
+    CHECK(k_print == std::string("print_plugin_config_overrides"));
+    CHECK(k_printer == std::string("printer_plugin_config_overrides"));
+    CHECK(k_filament == std::string("filament_plugin_config_overrides"));
+
+    const std::pair<Preset::Type, const std::vector<std::string>*> scopes[] = {
+        {Preset::TYPE_PRINT,    &Preset::print_options()},
+        {Preset::TYPE_PRINTER,  &Preset::printer_options()},
+        {Preset::TYPE_FILAMENT, &Preset::filament_options()},
+    };
+    auto contains = [](const std::vector<std::string>& v, const std::string& s){
+        return std::find(v.begin(), v.end(), s) != v.end();
+    };
+    for (auto &scoped : scopes) {
+        const std::string key = (scoped.first == Preset::TYPE_PRINT ? k_print :
+                                 scoped.first == Preset::TYPE_PRINTER ? k_printer : k_filament);
+        for (auto &owner : scopes) {
+            CAPTURE(key);
+            CAPTURE(owner.first);
+            CHECK(contains(*owner.second, key) == (owner.first == scoped.first));
+        }
+    }
+}
+
+TEST_CASE("DynamicPrintConfig save_to_json preserves legacy fields exactly", "[Config][Legacy]")
+{
+    DynamicPrintConfig cfg = DynamicPrintConfig::full_print_config();
+    cfg.set_key_value("plugins", new ConfigOptionStrings({"a;;h1", "b;;h2"}));
+    cfg.set_key_value("slicing_pipeline_plugin", new ConfigOptionStrings({"h1", "h2"}));
+    cfg.set_key_value("print_plugin_config_overrides", new ConfigOptionString(R"({"nested":{"x":1}})" ));
+    cfg.set_key_value("printer_plugin_config_overrides", new ConfigOptionString(R"("raw")"));
+    cfg.set_key_value("filament_plugin_config_overrides", new ConfigOptionString(R"([{"f":"pla"}])"));
+
+    fs::path tmp = fs::temp_directory_path() / fs::unique_path("orca-legacy-%%%%-%%%%.json");
+    cfg.save_to_json(tmp.string(), "test_preset", "User", "9.9.9");
+    boost::nowide::ifstream ifs(tmp.string());
+    REQUIRE(ifs.good());
+    json j; ifs >> j;
+    ifs.close();
+    fs::remove(tmp);
+
+    CHECK(j.contains("plugins"));
+    CHECK(j.contains("slicing_pipeline_plugin"));
+    CHECK(j.contains("print_plugin_config_overrides"));
+    CHECK(j.contains("printer_plugin_config_overrides"));
+    CHECK(j.contains("filament_plugin_config_overrides"));
+
+    CHECK(j["plugins"] == json::array({"a;;h1", "b;;h2"}));
+    CHECK(j["slicing_pipeline_plugin"] == json::array({"h1", "h2"}));
+    CHECK(j["print_plugin_config_overrides"] == std::string(R"({"nested":{"x":1}})"));
+    CHECK(j["printer_plugin_config_overrides"] == std::string(R"("raw")"));
+    CHECK(j["filament_plugin_config_overrides"] == std::string(R"([{"f":"pla"}])"));
+
+    DynamicPrintConfig reloaded = DynamicPrintConfig::full_print_config();
+    std::map<std::string, std::string> smap;
+    for (auto key : {"plugins", "slicing_pipeline_plugin", "print_plugin_config_overrides",
+                     "printer_plugin_config_overrides", "filament_plugin_config_overrides"}) {
+        if (j.contains(key)) {
+            if (j[key].is_array()) {
+                std::vector<std::string> vals = j[key].get<std::vector<std::string>>();
+                ConfigOptionStrings opt(vals);
+                smap[key] = opt.serialize();
+            } else if (j[key].is_string()) {
+                ConfigOptionString opt(j[key].get<std::string>());
+                smap[key] = opt.serialize();
+            }
+        }
+    }
+    reloaded.load_string_map(smap, ForwardCompatibilitySubstitutionRule::Disable);
+    CHECK(reloaded.option<ConfigOptionStrings>("plugins")->values == std::vector<std::string>{"a;;h1", "b;;h2"});
+    CHECK(reloaded.option<ConfigOptionStrings>("slicing_pipeline_plugin")->values == std::vector<std::string>{"h1", "h2"});
+    CHECK(reloaded.option<ConfigOptionString>("print_plugin_config_overrides")->value == R"({"nested":{"x":1}})");
+}
+
+TEST_CASE("legacy fields missing from file remain empty, not error", "[Config][Legacy]")
+{
+    DynamicPrintConfig cfg = DynamicPrintConfig::full_print_config();
+    CHECK(cfg.option<ConfigOptionStrings>("plugins")->values.empty());
+    CHECK(cfg.option<ConfigOptionStrings>("slicing_pipeline_plugin")->values.empty());
+    CHECK(cfg.option<ConfigOptionString>("print_plugin_config_overrides")->value.empty());
+
+    std::map<std::string, std::string> smap;
+    smap["plugins"] = cfg.option<ConfigOptionStrings>("plugins")->serialize();
+    smap["slicing_pipeline_plugin"] = cfg.option<ConfigOptionStrings>("slicing_pipeline_plugin")->serialize();
+    smap["print_plugin_config_overrides"] = cfg.option<ConfigOptionString>("print_plugin_config_overrides")->serialize();
+
+    DynamicPrintConfig reloaded = DynamicPrintConfig::full_print_config();
+    reloaded.load_string_map(smap, ForwardCompatibilitySubstitutionRule::Disable);
+    CHECK(reloaded.option<ConfigOptionStrings>("plugins")->values.empty());
+    CHECK(reloaded.option<ConfigOptionString>("print_plugin_config_overrides")->value.empty());
 }

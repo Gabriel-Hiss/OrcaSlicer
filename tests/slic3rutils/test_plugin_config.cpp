@@ -1,8 +1,14 @@
 #include <catch2/catch_all.hpp>
 
 #include <libslic3r/Utils.hpp>
-#include <slic3r/plugin/PluginConfig.hpp>
+#include <slic3r/plugin/PluginDescriptor.hpp>
+#include <slic3r/plugin/PluginLoader.hpp>
 #include <slic3r/plugin/PluginManager.hpp>
+#include <slic3r/plugin/PluginFsUtils.hpp>
+#include <slic3r/plugin/package/Hash.hpp>
+#include <slic3r/plugin/package/InstallState.hpp>
+#include <slic3r/plugin/package/PluginMetadata.hpp>
+#include <slic3r/plugin/package/PackageReader.hpp>
 
 #include "plugin_test_utils.hpp"
 
@@ -10,255 +16,241 @@
 #include <boost/nowide/fstream.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <fstream>
 #include <string>
 
 using namespace Slic3r;
+using namespace Slic3r::Plugin::Package;
 namespace fs = boost::filesystem;
-using json   = nlohmann::json;
+using json = nlohmann::json;
+using namespace Slic3r::Test;
 
 namespace {
 
-PluginCapabilityId capability_id(PluginCapabilityType type, const char* name, const char* plugin_key)
+std::string current_build_or_dummy()
 {
-    return {type, name, plugin_key};
-}
-
-json read_config_file()
-{
-    boost::nowide::ifstream ifs(PluginConfig::plugin_config_file().c_str());
-    json root;
-    ifs >> root;
-    return root;
-}
-
-void write_config_file(const std::string& contents)
-{
-    const fs::path path(PluginConfig::plugin_config_file());
-    fs::create_directories(path.parent_path());
-    boost::nowide::ofstream ofs(path.string().c_str(), std::ios::out | std::ios::trunc);
-    ofs << contents;
+    std::string cur = Slic3r::plugin_loader::current_build_id_string();
+    if (!cur.empty()) return cur;
+    return "windows-x86_64-00000000-0000-0000-0000-000000000000-1-aaaaaaaaaaaaaaaa";
 }
 
 } // namespace
 
-TEST_CASE("PluginConfig creates, reads back and persists a capability config", "[PluginConfig]")
+TEST_CASE("InstallState persists only artifact hash version and enabled", "[PluginConfig]")
 {
-    ScopedDataDir data_dir_guard("plugin-config-roundtrip");
+    Slic3r::Test::ScopedDataDir data_dir_guard("installstate-roundtrip");
 
-    PluginConfig config;
-    const PluginCapabilityId id = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a");
+    InstallState state;
+    state.schema   = INSTALL_STATE_SCHEMA_VERSION;
+    state.artifact = "myplugin.dll";
+    state.hash     = std::string(64, 'a');
+    state.version  = "1.2.3";
+    state.enabled  = true;
 
-    // A capability nobody has configured yet reads as an empty record rather than throwing.
-    CHECK_FALSE(config.has_config(id));
-    CHECK_FALSE(config.get_config(id));
+    const fs::path plugin_dir = data_dir_guard.plugins_dir() / "myplugin";
+    std::string err;
+    REQUIRE(Plugin::Package::write_install_state(plugin_dir, state, err));
+    CHECK(err.empty());
 
-    REQUIRE(config.store_capability_config(id, json{{"speed", 5}}));
-
-    const auto stored = config.get_config(id);
-    REQUIRE(stored);
-    CHECK(stored->id == id);
-    CHECK(stored->config == json{{"speed", 5}});
-    CHECK(config.has_config(id));
-
-    // store_capability_config writes through, so a fresh instance (a restart, in effect) sees it.
-    PluginConfig reloaded;
-    reloaded.load();
-    CHECK(reloaded.get_config(id)->config == json{{"speed", 5}});
-}
-
-TEST_CASE("PluginConfig updates only the target capability's cap_config", "[PluginConfig]")
-{
-    ScopedDataDir data_dir_guard("plugin-config-isolation");
-
-    PluginConfig config;
-    const PluginCapabilityId a_a = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a");
-    const PluginCapabilityId a_b = capability_id(PluginCapabilityType::Script, "cap_b", "plugin_a");
-    const PluginCapabilityId b_a = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_b");
-    // The identity is the full (type, capability, plugin_key) tuple, so all three below are separate records.
-    REQUIRE(config.store_capability_config(a_a, json{{"value", 1}}));
-    REQUIRE(config.store_capability_config(a_b, json{{"value", 2}}));
-    REQUIRE(config.store_capability_config(b_a, json{{"value", 3}}));
-
-    REQUIRE(config.store_capability_config(a_a, json{{"value", 99}}));
-
-    CHECK(config.get_config(a_a)->config == json{{"value", 99}});
-    CHECK(config.get_config(a_b)->config == json{{"value", 2}});
-    CHECK(config.get_config(b_a)->config == json{{"value", 3}});
-
-    // The same holds on disk, not just in memory.
-    PluginConfig reloaded;
-    reloaded.load();
-    CHECK(reloaded.get_config(a_a)->config == json{{"value", 99}});
-    CHECK(reloaded.get_config(a_b)->config == json{{"value", 2}});
-    CHECK(reloaded.get_config(b_a)->config == json{{"value", 3}});
-}
-
-TEST_CASE("PluginConfig isolates same-name capabilities by type", "[PluginConfig]")
-{
-    ScopedDataDir data_dir_guard("plugin-config-type-isolation");
-    const PluginCapabilityId script = capability_id(PluginCapabilityType::Script, "shared", "plugin_a");
-    const PluginCapabilityId importer = capability_id(PluginCapabilityType::Importer, "shared", "plugin_a");
-
-    PluginConfig config;
-    REQUIRE(config.store_capability_config(script, json{{"value", "script"}}));
-    REQUIRE(config.store_capability_config(importer, json{{"value", "importer"}}));
-    CHECK(config.get_config(script)->config == json{{"value", "script"}});
-    CHECK(config.get_config(importer)->config == json{{"value", "importer"}});
-
-    PluginConfig reloaded;
-    reloaded.load();
-    CHECK(reloaded.get_config(script)->config == json{{"value", "script"}});
-    CHECK(reloaded.get_config(importer)->config == json{{"value", "importer"}});
-}
-
-TEST_CASE("PluginConfig serializes the documented on-disk schema", "[PluginConfig]")
-{
-    ScopedDataDir data_dir_guard("plugin-config-schema");
-
-    PluginConfig config;
-    const PluginCapabilityId id = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a");
-    REQUIRE(config.store_capability_config(id, json{{"speed", 5}}));
-
-    // Locks the field names: an existing config.json must keep loading after any future change.
-    const json root = read_config_file();
-    REQUIRE(root.contains("config"));
-    REQUIRE(root.at("config").is_array());
-    REQUIRE(root.at("config").size() == 1);
-
-    const json& entry = root.at("config").front();
-    CHECK(entry.at("plugin_key") == "plugin_a");
-    CHECK(entry.at("capability") == "cap_a");
-    CHECK(entry.at("capability_type") == "script");
-    CHECK(entry.at("cap_config") == json{{"speed", 5}});
-    CHECK(entry.contains("plugin_version"));
-    // Only cap_config is user data; the rest of the record is host-managed.
-    CHECK(entry.size() == 5);
-}
-
-TEST_CASE("PluginConfig keeps a capability's config after its plugin goes away", "[PluginConfig]")
-{
-    ScopedDataDir data_dir_guard("plugin-config-retention");
+    InstallState loaded;
+    REQUIRE(Plugin::Package::read_install_state(plugin_dir, loaded, err));
+    CHECK(loaded.schema == INSTALL_STATE_SCHEMA_VERSION);
+    CHECK(loaded.artifact == "myplugin.dll");
+    CHECK(loaded.hash == std::string(64, 'a'));
+    CHECK(loaded.version == "1.2.3");
+    CHECK(loaded.enabled == true);
 
     {
-        PluginConfig config;
-        REQUIRE(config.store_capability_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a"), json{{"token", "keep me"}}));
+        boost::nowide::ifstream ifs((plugin_dir / INSTALL_STATE_FILENAME).string());
+        json j; ifs >> j;
+        CHECK(j.size() == 5);
+        CHECK(j.at("schema") == INSTALL_STATE_SCHEMA_VERSION);
+        CHECK(j.at("artifact") == "myplugin.dll");
+        CHECK(j.at("hash") == std::string(64, 'a'));
+        CHECK(j.at("version") == "1.2.3");
+        CHECK(j.at("enabled") == true);
     }
-
-    // config.json is deliberately not keyed to installed plugins: a record outlives its plugin and is
-    // still there on reinstall. Asserts no cleanup path silently drops it.
-    PluginConfig after_removal;
-    after_removal.load();
-    CHECK(after_removal.get_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a"))->config == json{{"token", "keep me"}});
+    state.enabled = false;
+    REQUIRE(Plugin::Package::write_install_state(plugin_dir, state, err));
+    REQUIRE(Plugin::Package::read_install_state(plugin_dir, loaded, err));
+    CHECK(loaded.enabled == false);
 }
 
-TEST_CASE("PluginConfig treats a missing config file as an empty store", "[PluginConfig]")
+TEST_CASE("InstallState normalizes hash to lowercase and rejects invalid hashes", "[PluginConfig]")
 {
-    ScopedDataDir data_dir_guard("plugin-config-missing");
+    Slic3r::Test::ScopedDataDir data_dir_guard("installstate-hash");
 
-    REQUIRE_FALSE(fs::exists(PluginConfig::plugin_config_file()));
+    InstallState state;
+    state.schema   = INSTALL_STATE_SCHEMA_VERSION;
+    state.artifact = "plugin.dll";
+    state.hash     = std::string(64, 'A');
+    state.version  = "0.1.0";
+    state.enabled  = true;
 
-    PluginConfig config;
-    REQUIRE_NOTHROW(config.load());
-    CHECK_FALSE(config.has_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a")));
-    CHECK_FALSE(config.dirty());
+    const fs::path plugin_dir = data_dir_guard.plugins_dir() / "plugina";
+    std::string err;
+    REQUIRE(Plugin::Package::write_install_state(plugin_dir, state, err));
+    InstallState loaded;
+    REQUIRE(Plugin::Package::read_install_state(plugin_dir, loaded, err));
+    CHECK(loaded.hash == std::string(64, 'a'));
+
+    state.hash = "abc";
+    fs::path bad_dir = data_dir_guard.plugins_dir() / "pluginb";
+    CHECK_FALSE(Plugin::Package::write_install_state(bad_dir, state, err));
+    CHECK_FALSE(err.empty());
 }
 
-TEST_CASE("PluginConfig survives a malformed config file", "[PluginConfig]")
+TEST_CASE("PluginFsUtils discover keeps invalid packages visible with error", "[PluginConfig]")
 {
-    SECTION("not JSON at all")
-    {
-        ScopedDataDir data_dir_guard("plugin-config-garbage");
-        write_config_file("this is not json {{{");
+    Slic3r::Test::ScopedDataDir data_dir_guard("discover-invalid");
 
-        PluginConfig config;
-        REQUIRE_NOTHROW(config.load()); // a bad config must not block startup
-        CHECK_FALSE(config.has_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a")));
-    }
+    const fs::path plugin_dir = data_dir_guard.plugins_dir() / "badplugin";
+    write_dummy_native_artifact(plugin_dir, "badplugin.dll");
+    InstallState st;
+    st.schema = INSTALL_STATE_SCHEMA_VERSION;
+    st.artifact = "badplugin.dll";
+    st.hash = std::string(64, 'b');
+    st.version = "1.0.0";
+    st.enabled = true;
+    std::string err;
+    REQUIRE(Plugin::Package::write_install_state(plugin_dir, st, err));
 
-    SECTION("valid JSON without the entries array")
-    {
-        ScopedDataDir data_dir_guard("plugin-config-noarray");
-        write_config_file(R"({"config": {"not": "an array"}})");
+    std::vector<std::string> dirs = { data_dir_guard.plugins_dir().string() };
+    std::string disc_err;
+    auto discovered = discover_plugin_packages(dirs, disc_err);
 
-        PluginConfig config;
-        REQUIRE_NOTHROW(config.load());
-        CHECK_FALSE(config.has_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a")));
-    }
-
-    SECTION("entries without an identity are skipped, the rest still load")
-    {
-        ScopedDataDir data_dir_guard("plugin-config-partial");
-        write_config_file(R"({"config": [
-            {"cap_config": {"orphan": true}},
-            {"plugin_key": "plugin_a", "capability": "cap_a", "capability_type": "script", "plugin_version": "1.0.0", "cap_config": {"kept": true}}
-        ]})");
-
-        PluginConfig config;
-        REQUIRE_NOTHROW(config.load());
-        CHECK(config.get_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a"))->config == json{{"kept", true}});
-        CHECK(config.get_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a"))->plugin_version == "1.0.0");
-    }
-
-    SECTION("an entry with no cap_config reads as an empty object")
-    {
-        ScopedDataDir data_dir_guard("plugin-config-nocap");
-        write_config_file(R"({"config": [
-            {"plugin_key": "plugin_a", "capability": "cap_a", "capability_type": "script", "plugin_version": "1.0.0"}
-        ]})");
-
-        PluginConfig config;
-        REQUIRE_NOTHROW(config.load());
-        REQUIRE(config.has_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a")));
-        CHECK(config.get_config(capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a"))->config == json::object());
-    }
-
-    SECTION("legacy entries without capability_type remain addressable")
-    {
-        ScopedDataDir data_dir_guard("plugin-config-notype");
-        write_config_file(R"({"config": [
-            {"plugin_key": "plugin_a", "capability": "cap_a", "plugin_version": "1.0.0", "cap_config": {"old": true}}
-        ]})");
-
-        PluginConfig config;
-        REQUIRE_NOTHROW(config.load());
-        const auto id = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a");
-        REQUIRE(config.has_config(id));
-        CHECK(config.get_config(id)->config == json{{"old", true}});
-
-        REQUIRE(config.store_capability_config(id, json{{"migrated", true}}));
-        const json root = read_config_file();
-        REQUIRE(root.at("config").size() == 1);
-        CHECK(root.at("config").front().at("capability_type") == "script");
-        CHECK(root.at("config").front().at("cap_config") == json{{"migrated", true}});
-    }
+    REQUIRE(discovered.size() == 1);
+    const PluginDescriptor& desc = discovered.front();
+    CHECK(desc.id == "badplugin");
+    CHECK(desc.install_state_valid == true);
+    CHECK(desc.metadata_valid == false);
+    CHECK_FALSE(desc.error.empty());
+    CHECK(desc.has_error());
 }
 
-TEST_CASE("PluginConfig refuses to store a record without an identity", "[PluginConfig]")
+TEST_CASE("discover returns plugin ids sorted and filters invalid when requested via manager", "[PluginConfig]")
 {
-    ScopedDataDir data_dir_guard("plugin-config-identity");
+    Slic3r::Test::ScopedDataDir data_dir_guard("discover-sort");
 
-    PluginConfig config;
-    config.save_config(CapabilityConfigEntry{capability_id(PluginCapabilityType::Script, "cap_a", ""), "1.0.0", json::object()});
-    config.save_config(CapabilityConfigEntry{capability_id(PluginCapabilityType::Script, "", "plugin_a"), "1.0.0", json::object()});
+    for (auto id : {"zeta", "alpha", "middle"}) {
+        fs::path d = data_dir_guard.plugins_dir() / id;
+        write_dummy_native_artifact(d, std::string(id) + ".dll");
+        InstallState st{INSTALL_STATE_SCHEMA_VERSION, std::string(id) + ".dll", std::string(64,'c'), "1.0.0", true};
+        std::string e; Plugin::Package::write_install_state(d, st, e);
+    }
+    std::string disc_err;
+    auto discovered = discover_plugin_packages({data_dir_guard.plugins_dir().string()}, disc_err);
+    REQUIRE(discovered.size() == 3);
 
-    // Neither could ever be looked up again, so neither is kept.
-    CHECK_FALSE(config.has_config(capability_id(PluginCapabilityType::Script, "cap_a", "")));
-    CHECK_FALSE(config.has_config(capability_id(PluginCapabilityType::Script, "", "plugin_a")));
-    CHECK_FALSE(config.dirty());
+    std::sort(discovered.begin(), discovered.end(), [](auto &a, auto &b){ return a.id < b.id; });
+    CHECK(discovered[0].id == "alpha");
+    CHECK(discovered[1].id == "middle");
+    CHECK(discovered[2].id == "zeta");
 }
 
-TEST_CASE("PluginConfig preserves unknown keys inside cap_config", "[PluginConfig]")
+TEST_CASE("PluginManager enable toggle persists to install state and affects enabled ids", "[PluginConfig]")
 {
-    ScopedDataDir data_dir_guard("plugin-config-unknown");
+    Slic3r::Test::ScopedDataDir data_dir_guard("manager-enable");
 
-    // The host never interprets cap_config, so a nested/odd shape must round-trip untouched.
-    const json nested = json{{"nested", {{"deep", json::array({1, 2, 3})}}}, {"flag", false}, {"name", "x"}};
+    const std::string plugin_id = "toggleplugin";
+    const fs::path plugin_dir = data_dir_guard.plugins_dir() / plugin_id;
+    std::string cur_build = current_build_or_dummy();
+    auto meta = make_minimal_plugin_json(plugin_id, "2.0.0", "jvm", "java", {cur_build}, "com.example.Toggle");
+    auto jar = write_jar_with_metadata(plugin_dir, plugin_id + ".jar", meta);
+    std::string hash_err;
+    std::string real_hash = Plugin::Package::sha256_file_hex(jar, hash_err);
+    REQUIRE(!real_hash.empty());
+    InstallState st{INSTALL_STATE_SCHEMA_VERSION, jar.filename().string(), real_hash, "2.0.0", true};
+    std::string e; REQUIRE(Plugin::Package::write_install_state(plugin_dir, st, e));
 
-    PluginConfig config;
-    const PluginCapabilityId id = capability_id(PluginCapabilityType::Script, "cap_a", "plugin_a");
-    REQUIRE(config.store_capability_config(id, nested));
+    PluginManager &mgr = PluginManager::instance();
+    mgr.shutdown();
+    REQUIRE(mgr.initialize());
 
-    PluginConfig reloaded;
-    reloaded.load();
-    CHECK(reloaded.get_config(id)->config == nested);
+    PluginDescriptor desc;
+    REQUIRE(mgr.try_get_plugin_descriptor(plugin_id, desc));
+    CHECK(desc.enabled == true);
+
+    std::string err;
+    REQUIRE(mgr.set_plugin_enabled(plugin_id, false, err));
+    CHECK(err.empty());
+    CHECK(mgr.is_plugin_enabled(plugin_id) == false);
+
+    InstallState reloaded;
+    REQUIRE(Plugin::Package::read_install_state(plugin_dir, reloaded, err));
+    CHECK(reloaded.enabled == false);
+
+    auto enabled_ids = mgr.get_enabled_plugin_ids();
+    bool contains = std::find(enabled_ids.begin(), enabled_ids.end(), plugin_id) != enabled_ids.end();
+    if (desc.metadata_valid) {
+        CHECK_FALSE(contains);
+    }
+
+    REQUIRE(mgr.set_plugin_enabled(plugin_id, true, err));
+    CHECK(mgr.is_plugin_enabled(plugin_id) == true);
+    REQUIRE(Plugin::Package::read_install_state(plugin_dir, reloaded, err));
+    CHECK(reloaded.enabled == true);
+
+    mgr.shutdown();
+}
+
+TEST_CASE("incompatible build_id plugin is discovered but load is rejected without executing entry", "[PluginConfig]")
+{
+    Slic3r::Test::ScopedDataDir data_dir_guard("incompatible-load");
+
+    const std::string plugin_id = "incompat";
+    const fs::path plugin_dir = data_dir_guard.plugins_dir() / plugin_id;
+    std::string fake_build = "windows-x86_64-ffffffff-ffff-ffff-ffff-ffffffffffff-99-ffffffffffff";
+    if (current_build_or_dummy().rfind("windows-", 0) == 0) {
+        fake_build = "linux-x86_64-aaaaaaaaaaaaaaaa-aaaaaaaaaaaa";
+    }
+    auto meta = make_minimal_plugin_json(plugin_id, "1.0.0", "native", "cpp", {fake_build});
+    auto art = write_jar_with_metadata(plugin_dir, plugin_id + ".jar", meta);
+    PluginMetadata pm;
+    std::string merr;
+    REQUIRE(validate_plugin_metadata_json(meta.dump(), pm, merr));
+    CHECK_FALSE(has_exact_build_match(pm, current_build_or_dummy()));
+    CHECK(has_exact_build_match(pm, fake_build));
+
+    PluginDescriptor desc;
+    desc.id = plugin_id;
+    desc.runtime = "native";
+    desc.language = "cpp";
+    desc.hook_abi = 1;
+    desc.targets = pm.targets;
+    desc.metadata_valid = true;
+    desc.artifact_path = art.string();
+    desc.plugin_root = plugin_dir.string();
+    desc.enabled = true;
+    desc.artifact_hash = std::string(64,'e');
+
+    LoadedPlugin plugin;
+    plugin.descriptor = desc;
+    std::string load_err;
+    bool ok = Slic3r::plugin_loader::load_plugin(plugin, load_err);
+    CHECK_FALSE(ok);
+    CHECK_THAT(load_err, Catch::Matchers::ContainsSubstring("Build mismatch"));
+    CHECK_FALSE(plugin.is_loaded());
+    CHECK_FALSE(plugin.descriptor.error.empty());
+}
+
+TEST_CASE("PluginMetadata validation rejects invalid id and version", "[PluginConfig]")
+{
+    std::string err;
+    PluginMetadata out;
+
+    json j = make_minimal_plugin_json("BadId", "1.0.0");
+    CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+    CHECK_FALSE(err.empty());
+
+    j = make_minimal_plugin_json("goodid", "not-semver");
+    CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+
+    j = make_minimal_plugin_json("goodid2", "1.0.0");
+    j.erase("targets");
+    CHECK_FALSE(validate_plugin_metadata_json(j, out, err));
+
+    j = make_minimal_plugin_json("goodid3", "1.2.3", "native", "cpp", {"windows-x86_64-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee-1-aaaaaaaaaaaa"});
+    CHECK(validate_plugin_metadata_json(j, out, err));
 }

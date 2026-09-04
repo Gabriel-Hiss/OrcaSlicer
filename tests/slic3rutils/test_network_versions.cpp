@@ -9,6 +9,7 @@
 #include "plugin_test_utils.hpp"
 
 using namespace Slic3r;
+using Slic3r::Test::ScopedDataDir;
 namespace fs = boost::filesystem;
 
 namespace {

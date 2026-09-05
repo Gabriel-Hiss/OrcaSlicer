@@ -322,6 +322,7 @@ void GCodeProcessor::TimeMachine::reset()
     minimum_cruise_ratio = 0.5f;
     requested_accel_to_decel = -1.0f;
     klipper_junction_flush = 1.0f;
+    klipper_queue_priming = true;
     time = 0.0f;
     stop_times = std::vector<StopTime>();
     curr.reset();
@@ -442,6 +443,7 @@ GCodeProcessor::TimeMachine::AdditionalBuffer GCodeProcessor::TimeMachine::merge
 size_t GCodeProcessor::TimeMachine::plan_klipper(bool lazy)
 {
     klipper_junction_flush = requested_accel_to_decel >= 0.0f ? 0.250f : 0.150f;
+    klipper_queue_priming = false;
     size_t flush_count = blocks.size();
     bool update_flush_count = lazy;
     float next_start_v2 = 0.0f;
@@ -469,6 +471,8 @@ size_t GCodeProcessor::TimeMachine::plan_klipper(bool lazy)
                                   sqr(block.feedrate_profile.cruise), peak_cruise_v2});
             pending = 0;
         }
+        // Until the forward pass, these fields hold v^2, not speeds; -1 marks
+        // an unassigned cruise speed. A lazy return leaves them in this state.
         block.feedrate_profile.entry = start_v2;
         block.feedrate_profile.exit = next_start_v2;
         block.trapezoid.cruise_feedrate = cruise_v2;
@@ -499,7 +503,8 @@ void GCodeProcessor::TimeMachine::calculate_time(GCodeProcessorResult& result, P
 {
     if (!enabled)
         return;
-    // Finalization must account for buffered delays even when no motion remains.
+    // Drain buffered delays on the final pass, even with no motion left.
+    // A trailing filament change has no later move to receive its time.
     const bool drain_final = is_final && !m_additional_time_buffer.empty();
     if ((klipper ? blocks.empty() : blocks.size() < 2) && !drain_final) {
         // Not enough blocks to attribute the extra time to yet; buffer it so it is
@@ -6476,11 +6481,15 @@ void GCodeProcessor::process_SET_VELOCITY_LIMIT(const GCodeReader::GCodeLine& li
             if (name == "ACCEL" && value > 0.0f)
                 machine.acceleration = machine.travel_acceleration = value;
             else if (name == "MINIMUM_CRUISE_RATIO" && value >= 0.0f && value < 1.0f) {
+                if (machine.klipper_queue_priming && machine.requested_accel_to_decel >= 0.0f)
+                    machine.klipper_junction_flush -= 1.0f;
                 machine.minimum_cruise_ratio = value;
                 machine.requested_accel_to_decel = -1.0f;
-            } else if (name == "ACCEL_TO_DECEL" && value > 0.0f)
+            } else if (name == "ACCEL_TO_DECEL" && value > 0.0f) {
+                if (machine.klipper_queue_priming && machine.requested_accel_to_decel < 0.0f)
+                    machine.klipper_junction_flush += 1.0f;
                 machine.requested_accel_to_decel = value;
-            else if (name == "SQUARE_CORNER_VELOCITY" && value >= 0.0f) {
+            } else if (name == "SQUARE_CORNER_VELOCITY" && value >= 0.0f) {
                 set_option_value(m_time_processor.machine_limits.machine_max_jerk_x, i, value);
                 set_option_value(m_time_processor.machine_limits.machine_max_jerk_y, i, value);
             } else if (name == "VELOCITY" && value > 0.0f) {
@@ -7325,8 +7334,11 @@ float GCodeProcessor::calc_vmax_junction_deviation(const TimeBlock& block, const
         float limit = std::min(sqr(block.feedrate_profile.cruise), sqr(prev.feedrate));
         const float extrude_ratio_change = std::abs(curr.axis_feedrate[E] / curr.feedrate -
                                                    prev.axis_feedrate[E] / prev.feedrate);
+        // Klipper's instantaneous_corner_velocity defaults to 1 mm/s.
+        // It is independent of machine_max_jerk_e; custom firmware values
+        // cannot be inferred from the slicer's jerk setting.
         if (extrude_ratio_change > 0.0f)
-            limit = std::min(limit, sqr(get_axis_max_jerk(mode, E) / extrude_ratio_change));
+            limit = std::min(limit, sqr(1.0f / extrude_ratio_change));
         const float cosine = std::clamp(-prev.exit_direction.dot(curr.enter_direction), -1.0f, 1.0f);
         const float sin_half = std::sqrt(0.5f * (1.0f - cosine));
         const float cos_half = std::sqrt(0.5f * (1.0f + cosine));
@@ -7347,7 +7359,9 @@ float GCodeProcessor::calc_vmax_junction_deviation(const TimeBlock& block, const
     if (!has_prev_move)
         return 0.0f;  // starts from rest, the planner raises this on the reverse pass
 
-    // Marlin normalizes the junction direction over XYZE.
+    // Unit vectors over XYZE keep this a cosine. Scaling by 1 / XYZ distance
+    // leaves an E term that makes extruding corners appear straighter.
+    // Marlin normalizes over XYZE; the Klipper branch above uses XYZ only.
     float junction_cos_theta = (-prev.jd_unit_vec).dot(curr.jd_unit_vec);
     if (junction_cos_theta > 0.999999f)
         return 0.0f; // the path doubles back, the machine has to stop
@@ -7597,6 +7611,14 @@ void GCodeProcessor::calculate_time(GCodeProcessorResult& result, size_t keep_la
 void GCodeProcessor::simulate_st_synchronize(float additional_time, EMoveType target_move_type)
 {
     calculate_time(m_result, 0, additional_time, target_move_type);
+    if (m_flavor == gcfKlipper) {
+        // ToolHead overrides the normal look-ahead window with BUFFER_TIME_HIGH
+        // at startup and after synchronization: 2 s on legacy, 1 s on modern Klipper.
+        for (TimeMachine& machine : m_time_processor.machines) {
+            machine.klipper_junction_flush = machine.requested_accel_to_decel >= 0.0f ? 2.0f : 1.0f;
+            machine.klipper_queue_priming = true;
+        }
+    }
 }
 
 void GCodeProcessor::update_estimated_times_stats()

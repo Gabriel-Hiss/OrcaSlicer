@@ -696,6 +696,7 @@ class Print;
             float minimum_cruise_ratio{ 0.5f };
             float requested_accel_to_decel{ -1.0f };
             float klipper_junction_flush{ 1.0f };
+            bool klipper_queue_priming{ true };
             // We accumulate total print time in doubles to reduce the loss of precision
             // while adding big floating numbers with small float numbers.
             double time; // s

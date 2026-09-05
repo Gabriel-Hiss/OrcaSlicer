@@ -320,6 +320,7 @@ void GCodeProcessor::TimeMachine::reset()
     extrude_factor_override_percentage = 1.0f;
     klipper = false;
     minimum_cruise_ratio = 0.5f;
+    requested_accel_to_decel = -1.0f;
     klipper_junction_flush = 1.0f;
     time = 0.0f;
     stop_times = std::vector<StopTime>();
@@ -440,7 +441,7 @@ GCodeProcessor::TimeMachine::AdditionalBuffer GCodeProcessor::TimeMachine::merge
 // reserves cruising distance across a sequence, not separately in each segment.
 size_t GCodeProcessor::TimeMachine::plan_klipper(bool lazy)
 {
-    klipper_junction_flush = 0.150f;
+    klipper_junction_flush = requested_accel_to_decel >= 0.0f ? 0.250f : 0.150f;
     size_t flush_count = blocks.size();
     bool update_flush_count = lazy;
     float next_start_v2 = 0.0f;
@@ -5186,8 +5187,10 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
         block.acceleration = acceleration;
         if (m_flavor == gcfKlipper) {
             block.junction_deviation = get_junction_deviation(static_cast<PrintEstimatedStatistics::ETimeMode>(i), acceleration);
-            block.mcr_delta_v2 = 2.0f * distance * std::min(acceleration,
-                machine.acceleration * (1.0f - machine.minimum_cruise_ratio));
+            const float cruise_acceleration = machine.requested_accel_to_decel >= 0.0f ?
+                std::min(machine.acceleration, machine.requested_accel_to_decel) :
+                machine.acceleration * (1.0f - machine.minimum_cruise_ratio);
+            block.mcr_delta_v2 = 2.0f * distance * std::min(acceleration, cruise_acceleration);
         }
 
         static const float PREVIOUS_FEEDRATE_THRESHOLD = 0.0001f;
@@ -6455,7 +6458,7 @@ void GCodeProcessor::process_M205(const GCodeReader::GCodeLine& line)
 void GCodeProcessor::process_SET_VELOCITY_LIMIT(const GCodeReader::GCodeLine& line)
 {
     static const std::regex parameter_pattern(
-        R"(\s(VELOCITY|ACCEL|SQUARE_CORNER_VELOCITY|MINIMUM_CRUISE_RATIO)\s*=\s*([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)(?=\s|;|$))",
+        R"(\s(VELOCITY|ACCEL|ACCEL_TO_DECEL|SQUARE_CORNER_VELOCITY|MINIMUM_CRUISE_RATIO)\s*=\s*([+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?)(?=\s|;|$))",
         std::regex::icase);
     const std::string command = line.raw().substr(0, line.raw().find(';'));
     for (std::sregex_iterator it(command.begin(), command.end(), parameter_pattern), end; it != end; ++it) {
@@ -6472,8 +6475,11 @@ void GCodeProcessor::process_SET_VELOCITY_LIMIT(const GCodeReader::GCodeLine& li
             TimeMachine& machine = m_time_processor.machines[i];
             if (name == "ACCEL" && value > 0.0f)
                 machine.acceleration = machine.travel_acceleration = value;
-            else if (name == "MINIMUM_CRUISE_RATIO" && value >= 0.0f && value < 1.0f)
+            else if (name == "MINIMUM_CRUISE_RATIO" && value >= 0.0f && value < 1.0f) {
                 machine.minimum_cruise_ratio = value;
+                machine.requested_accel_to_decel = -1.0f;
+            } else if (name == "ACCEL_TO_DECEL" && value > 0.0f)
+                machine.requested_accel_to_decel = value;
             else if (name == "SQUARE_CORNER_VELOCITY" && value >= 0.0f) {
                 set_option_value(m_time_processor.machine_limits.machine_max_jerk_x, i, value);
                 set_option_value(m_time_processor.machine_limits.machine_max_jerk_y, i, value);

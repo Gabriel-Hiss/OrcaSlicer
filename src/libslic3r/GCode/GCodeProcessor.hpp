@@ -694,6 +694,7 @@ class Print;
             float extrude_factor_override_percentage;
             bool klipper{ false };
             float minimum_cruise_ratio{ 0.5f };
+            float requested_accel_to_decel{ -1.0f };
             float klipper_junction_flush{ 1.0f };
             // We accumulate total print time in doubles to reduce the loss of precision
             // while adding big floating numbers with small float numbers.

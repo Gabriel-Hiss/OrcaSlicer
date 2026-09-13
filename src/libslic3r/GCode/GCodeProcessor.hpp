@@ -72,12 +72,12 @@ class Print;
 
         struct Mode
         {
-            float time;
+            double time;
             float prepare_time;
             std::vector<std::pair<CustomGCode::Type, std::pair<float, float>>> custom_gcode_times;
 
             void reset() {
-                time = 0.0f;
+                time = 0.0;
                 prepare_time = 0.0f;
                 custom_gcode_times.clear();
                 custom_gcode_times.shrink_to_fit();
@@ -693,6 +693,7 @@ class Print;
             float max_travel_acceleration; // mm/s^2
             float extrude_factor_override_percentage;
             bool klipper{ false };
+            bool klipper_modern{ false };
             float minimum_cruise_ratio{ 0.5f };
             float requested_accel_to_decel{ -1.0f };
             float klipper_junction_flush{ 1.0f };
@@ -1267,7 +1268,7 @@ class Print;
         void process_buffer(const std::string& buffer);
         void finalize(bool post_process);
 
-        float get_time(PrintEstimatedStatistics::ETimeMode mode) const;
+        double get_time(PrintEstimatedStatistics::ETimeMode mode) const;
         float get_prepare_time(PrintEstimatedStatistics::ETimeMode mode) const;
         std::string get_time_dhm(PrintEstimatedStatistics::ETimeMode mode) const;
         std::vector<std::pair<CustomGCode::Type, std::pair<float, float>>> get_custom_gcode_times(PrintEstimatedStatistics::ETimeMode mode, bool include_remaining) const;

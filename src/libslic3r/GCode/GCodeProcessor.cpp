@@ -319,6 +319,7 @@ void GCodeProcessor::TimeMachine::reset()
     max_travel_acceleration = 0.0f;
     extrude_factor_override_percentage = 1.0f;
     klipper = false;
+    klipper_modern = false;
     minimum_cruise_ratio = 0.5f;
     requested_accel_to_decel = -1.0f;
     klipper_junction_flush = 1.0f;
@@ -539,7 +540,19 @@ void GCodeProcessor::TimeMachine::calculate_time(GCodeProcessorResult& result, P
     size_t additional_buffer_idx = 0;
     for (size_t i = 0; i < n_blocks_process; ++i) {
         const TimeBlock& block = blocks[i];
-        float block_time = block.time();
+        double motion_time;
+        if (klipper && block.trapezoid.cruise_feedrate > 0.0f) {
+            // Integrate using the planned speeds. Reconstructing the exit speed
+            // from rounded deceleration distance loses precision near a stop.
+            const double cruise = block.trapezoid.cruise_feedrate;
+            const double accel_delta = cruise - block.feedrate_profile.entry;
+            const double decel_delta = cruise - block.feedrate_profile.exit;
+            motion_time = block.distance / cruise +
+                (sqr(accel_delta) + sqr(decel_delta)) / (2.0 * block.acceleration * cruise);
+        } else {
+            motion_time = block.time();
+        }
+        double block_time = motion_time;
         if (additional_buffer_idx < additional_buffer.size()) {
             const EMoveType buf_move_type = additional_buffer[additional_buffer_idx].first;
             if (buf_move_type == EMoveType::Noop || buf_move_type == block.move_type) {
@@ -548,13 +561,13 @@ void GCodeProcessor::TimeMachine::calculate_time(GCodeProcessorResult& result, P
             }
         }
 
-        time += double(block_time);
+        time += block_time;
         // Orca: accumulate per-SkipType time spent inside SKIPPABLE regions, folded into this single
         // calculate_time write site. Fires fleet-wide (the shipping time_lapse_gcode template stamps
         // blocks stTimelapse), but writes only skippable_part_time, which has no g-code-emitting
         // reader until the pre-heat injector consumes it, so output is byte-identical.
         if (block.skippable_type != SkipType::stNone)
-            result.skippable_part_time[block.skippable_type] += block.time();
+            result.skippable_part_time[block.skippable_type] += motion_time;
         result.moves[block.move_id].time[static_cast<size_t>(mode)] = block_time;
         gcode_time.cache += block_time;
         //BBS
@@ -2971,6 +2984,8 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     m_parser.apply_config(config);
 
     m_flavor = config.gcode_flavor;
+    for (TimeMachine& machine : m_time_processor.machines)
+        machine.klipper_modern = config.minimum_cruise_ratio_enable.value;
     m_printer_model = config.printer_model.value;
 
     m_single_extruder_multi_material = config.single_extruder_multi_material;
@@ -3216,6 +3231,9 @@ void GCodeProcessor::apply_config(const DynamicPrintConfig& config)
     const ConfigOptionEnum<GCodeFlavor>* gcode_flavor = config.option<ConfigOptionEnum<GCodeFlavor>>("gcode_flavor");
     if (gcode_flavor != nullptr)
         m_flavor = gcode_flavor->value;
+    if (const auto* modern = config.option<ConfigOptionBool>("minimum_cruise_ratio_enable"))
+        for (TimeMachine& machine : m_time_processor.machines)
+            machine.klipper_modern = modern->value;
 
     const ConfigOptionPoints* printable_area = config.option<ConfigOptionPoints>("printable_area");
     if (printable_area != nullptr)
@@ -3793,9 +3811,9 @@ void GCodeProcessor::finalize(bool post_process)
     update_slice_warnings();
 }
 
-float GCodeProcessor::get_time(PrintEstimatedStatistics::ETimeMode mode) const
+double GCodeProcessor::get_time(PrintEstimatedStatistics::ETimeMode mode) const
 {
-    return (mode < PrintEstimatedStatistics::ETimeMode::Count) ? float(m_time_processor.machines[static_cast<size_t>(mode)].time) : 0.0f;
+    return (mode < PrintEstimatedStatistics::ETimeMode::Count) ? m_time_processor.machines[static_cast<size_t>(mode)].time : 0.0;
 }
 
 float GCodeProcessor::get_prepare_time(PrintEstimatedStatistics::ETimeMode mode) const
@@ -4924,6 +4942,14 @@ void GCodeProcessor::process_G1(const GCodeReader::GCodeLine& line, const std::o
     if (line.has_e()) g1_axes[E] = (double)line.e();
     std::optional<double> g1_feedrate = std::nullopt;
     if (line.has_f()) g1_feedrate = (double)line.f();
+    if (m_flavor == gcfKlipper) {
+        // Preserve decimal coordinates for short segments without parsing twice.
+        for (unsigned char axis = X; axis <= E; ++axis)
+            if (line.has(static_cast<Axis>(axis)))
+                g1_axes[axis] = line.precise_value(static_cast<Axis>(axis));
+        if (line.has_f())
+            g1_feedrate = line.precise_value(F);
+    }
     process_G1(g1_axes, g1_feedrate);
 }
 
@@ -5150,6 +5176,10 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
             if (max_velocity > 0.0f)
                 curr.feedrate = std::min(curr.feedrate, max_velocity);
         }
+        // Klipper applies E limits to retractions and moves without XY motion,
+        // not to positive extrusion along a printing path.
+        const bool limit_extruder = m_flavor != gcfKlipper || delta_pos[E] < 0.0 ||
+                                    (delta_pos[X] == 0.0 && delta_pos[Y] == 0.0);
         // calculates block cruise feedrate
         float min_feedrate_factor = 1.0f;
         for (unsigned char a = X; a <= E; ++a) {
@@ -5158,7 +5188,8 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
                 curr.axis_feedrate[a] *= machine.extrude_factor_override_percentage;
 
             curr.abs_axis_feedrate[a] = std::abs(curr.axis_feedrate[a]);
-            if (curr.abs_axis_feedrate[a] != 0.0f) {
+            if (curr.abs_axis_feedrate[a] != 0.0f && (a != E || limit_extruder) &&
+                (m_flavor != gcfKlipper || a == Z || a == E)) {
                 float axis_max_feedrate = get_axis_max_feedrate(static_cast<PrintEstimatedStatistics::ETimeMode>(i), static_cast<Axis>(a), m_machine_config_idx);
                 if (axis_max_feedrate != 0.0f) min_feedrate_factor = std::min<float>(min_feedrate_factor, axis_max_feedrate / curr.abs_axis_feedrate[a]);
             }
@@ -5176,7 +5207,9 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
 
         // calculates block acceleration
         float acceleration =
-            (m_flavor == gcfKlipper && !is_extrusion_only_move(delta_pos)) ? get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
+            (m_flavor == gcfKlipper) ? (is_extrusion_only_move(delta_pos) ?
+                get_axis_max_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i), E, m_machine_config_idx) :
+                get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i))) :
             (type == EMoveType::Travel) ? get_travel_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
             (is_extrusion_only_move(delta_pos) ?
                 get_retract_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
@@ -5184,6 +5217,8 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
 
         //BBS
         for (unsigned char a = X; a <= E; ++a) {
+            if ((a == E && !limit_extruder) || (m_flavor == gcfKlipper && (a == X || a == Y)))
+                continue;
             float axis_max_acceleration = get_axis_max_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i), static_cast<Axis>(a), m_machine_config_idx);
             if (acceleration * std::abs(delta_pos[a]) * inv_distance > axis_max_acceleration)
                 acceleration = axis_max_acceleration / (std::abs(delta_pos[a]) * inv_distance);
@@ -6249,6 +6284,8 @@ void GCodeProcessor::process_M108(const GCodeReader::GCodeLine& line)
 
 void GCodeProcessor::process_M109(const GCodeReader::GCodeLine& line)
 {
+    if (m_flavor == gcfKlipper)
+        simulate_st_synchronize();
     int filament_id = get_filament_id();
     float new_temp;
     if (line.has_value('R', new_temp)) {
@@ -6311,6 +6348,8 @@ void GCodeProcessor::process_M140(const GCodeReader::GCodeLine& line)
 
 void GCodeProcessor::process_M190(const GCodeReader::GCodeLine& line)
 {
+    if (m_flavor == gcfKlipper)
+        simulate_st_synchronize();
     float new_temp;
     if (line.has_value('S', new_temp))
         m_highest_bed_temp = m_highest_bed_temp < (int)new_temp ? (int)new_temp : m_highest_bed_temp;
@@ -6485,7 +6524,7 @@ void GCodeProcessor::process_SET_VELOCITY_LIMIT(const GCodeReader::GCodeLine& li
                     machine.klipper_junction_flush -= 1.0f;
                 machine.minimum_cruise_ratio = value;
                 machine.requested_accel_to_decel = -1.0f;
-            } else if (name == "ACCEL_TO_DECEL" && value > 0.0f) {
+            } else if (name == "ACCEL_TO_DECEL" && value > 0.0f && !machine.klipper_modern) {
                 if (machine.klipper_queue_priming && machine.requested_accel_to_decel < 0.0f)
                     machine.klipper_junction_flush += 1.0f;
                 machine.requested_accel_to_decel = value;
@@ -6534,14 +6573,15 @@ void GCodeProcessor::process_M400(const GCodeReader::GCodeLine& line)
 {
     float value_s = 0.0;
     float value_p = 0.0;
-    if (line.has_value('S', value_s) || line.has_value('P', value_p)) {
-        value_s += value_p * 0.001;
-        // Skip post-print end-gcode dwells so they don't inflate the M73 estimate (see
-        // m_skip_end_gcode_delays). Only omits dwell time — no state is updated here.
-        if (m_skip_end_gcode_delays)
-            return;
-        simulate_st_synchronize(value_s);
-    }
+    const bool has_delay = line.has_value('S', value_s) || line.has_value('P', value_p);
+    if (m_flavor != gcfKlipper && !has_delay)
+        return;
+    value_s += value_p * 0.001;
+    // Skip post-print end-gcode dwells so they don't inflate the M73 estimate (see
+    // m_skip_end_gcode_delays). Only omits dwell time — no state is updated here.
+    if (m_skip_end_gcode_delays && has_delay)
+        return;
+    simulate_st_synchronize(value_s);
 }
 
 void GCodeProcessor::process_M401(const GCodeReader::GCodeLine& line)
@@ -7331,20 +7371,24 @@ float GCodeProcessor::calc_vmax_junction_deviation(const TimeBlock& block, const
         if (!has_prev_move || curr.enter_direction.isZero() || prev.exit_direction.isZero())
             return 0.0f;
         const TimeBlock& previous = m_time_processor.machines[static_cast<size_t>(mode)].blocks.back();
-        float limit = std::min(sqr(block.feedrate_profile.cruise), sqr(prev.feedrate));
-        const float extrude_ratio_change = std::abs(curr.axis_feedrate[E] / curr.feedrate -
+        double limit = std::min(sqr(double(block.feedrate_profile.cruise)), sqr(double(prev.feedrate)));
+        const double extrude_ratio_change = std::abs(curr.axis_feedrate[E] / curr.feedrate -
                                                    prev.axis_feedrate[E] / prev.feedrate);
         // Klipper's instantaneous_corner_velocity defaults to 1 mm/s.
         // It is independent of machine_max_jerk_e; custom firmware values
         // cannot be inferred from the slicer's jerk setting.
         if (extrude_ratio_change > 0.0f)
-            limit = std::min(limit, sqr(1.0f / extrude_ratio_change));
-        const float cosine = std::clamp(-prev.exit_direction.dot(curr.enter_direction), -1.0f, 1.0f);
-        const float sin_half = std::sqrt(0.5f * (1.0f - cosine));
-        const float cos_half = std::sqrt(0.5f * (1.0f + cosine));
-        if (sin_half < 1.0f && cos_half > 0.0f) {
-            const float radius = sin_half / (1.0f - sin_half);
-            const float half_tan = 0.5f * sin_half / cos_half;
+            limit = std::min(limit, sqr(1.0 / extrude_ratio_change));
+        // Recover directions from the double-precision axis velocities: float
+        // unit vectors lose the angle between nearly collinear short segments.
+        const Vec3d prev_direction = Vec3d(prev.axis_feedrate[X], prev.axis_feedrate[Y], prev.axis_feedrate[Z]).normalized();
+        const Vec3d curr_direction = Vec3d(curr.axis_feedrate[X], curr.axis_feedrate[Y], curr.axis_feedrate[Z]).normalized();
+        const double cosine = std::clamp(-prev_direction.dot(curr_direction), -1.0, 1.0);
+        const double sin_half = std::sqrt(0.5 * (1.0 - cosine));
+        const double cos_half = std::sqrt(0.5 * (1.0 + cosine));
+        if (sin_half < 1.0 && cos_half > 0.0) {
+            const double radius = sin_half / (1.0 - sin_half);
+            const double half_tan = 0.5 * sin_half / cos_half;
             limit = std::min({limit,
                 radius * block.junction_deviation * block.acceleration,
                 radius * previous.junction_deviation * previous.acceleration,
@@ -7653,7 +7697,7 @@ double GCodeProcessor::extract_absolute_position_on_axis(Axis axis, const GCodeR
             is_relative |= (m_e_local_positioning_type == EPositioningType::Relative);
 
         const double lengthsScaleFactor = (m_units == EUnits::Inches) ? double(INCHES_TO_MM) : 1.0;
-        double ret = line.value(Slic3r::Axis(axis)) * lengthsScaleFactor;
+        double ret = line.precise_value(Slic3r::Axis(axis)) * lengthsScaleFactor;
         // if (axis == E && m_use_volumetric_e)
         //     ret /= area_filament_cross_section;
         return is_relative ? m_start_position[axis] + ret : m_origin[axis] + ret;

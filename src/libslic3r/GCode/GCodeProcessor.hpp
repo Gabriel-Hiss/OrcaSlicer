@@ -613,6 +613,9 @@ class Print;
             float junction_deviation{ 0.0f };
             float max_mcr_entry_speed_sqr{ 0.0f };
             float mcr_delta_v2{ 0.0f };
+            // Peak cruise speed squared in effect when this block was planned. Only set on a block
+            // that can accelerate; the delayed blocks after it are seeded from its value.
+            float peak_cruise_v2{ 0.0f };
             Flags flags;
             FeedrateProfile feedrate_profile;
             Trapezoid trapezoid;

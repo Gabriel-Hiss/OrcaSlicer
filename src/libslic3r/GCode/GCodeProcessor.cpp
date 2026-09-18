@@ -462,11 +462,14 @@ size_t GCodeProcessor::TimeMachine::plan_klipper(bool lazy)
         ++pending;
         if (mcr_start_v2 < reachable_mcr_v2) {
             if (mcr_start_v2 + block.mcr_delta_v2 > next_mcr_start_v2 || pending > 1) {
+                // Stop at this block, not past it: the blocks above still have a cruise speed
+                // that depends on moves not yet seen, so only [0, i) may be committed.
                 if (update_flush_count && peak_cruise_v2 > 0.0f) {
-                    flush_count = i + pending;
+                    flush_count = i;
                     update_flush_count = false;
                 }
-                peak_cruise_v2 = 0.5f * (mcr_start_v2 + reachable_mcr_v2);
+                peak_cruise_v2 = std::min(sqr(block.feedrate_profile.cruise),
+                                          0.5f * (mcr_start_v2 + reachable_mcr_v2));
             }
             cruise_v2 = std::min({0.5f * (start_v2 + reachable_start_v2),
                                   sqr(block.feedrate_profile.cruise), peak_cruise_v2});
@@ -477,25 +480,34 @@ size_t GCodeProcessor::TimeMachine::plan_klipper(bool lazy)
         block.feedrate_profile.entry = start_v2;
         block.feedrate_profile.exit = next_start_v2;
         block.trapezoid.cruise_feedrate = cruise_v2;
+        block.peak_cruise_v2 = peak_cruise_v2;
         next_start_v2 = start_v2;
         next_mcr_start_v2 = mcr_start_v2;
     }
     if (update_flush_count)
         return 0;
+    // A run of blocks that cannot accelerate is resolved here, once the peak cruise speed of the
+    // accelerating block that precedes it is known. Each one takes a running minimum with its own
+    // entry speed, seeded from that peak rather than from the setter's own clamped cruise speed.
     float prev_cruise_v2 = 0.0f;
     for (size_t i = 0; i < flush_count; ++i) {
         TimeBlock& block = blocks[i];
         float cruise_v2 = block.trapezoid.cruise_feedrate;
-        if (cruise_v2 < 0.0f)
+        if (cruise_v2 < 0.0f) {
             cruise_v2 = std::min(prev_cruise_v2, block.feedrate_profile.entry);
+            prev_cruise_v2 = cruise_v2;
+        } else
+            prev_cruise_v2 = block.peak_cruise_v2;
         const float start_v2 = std::min(block.feedrate_profile.entry, cruise_v2);
         const float end_v2 = std::min(block.feedrate_profile.exit, cruise_v2);
+        // A zero acceleration would put an infinity in the ramp distances; the Marlin helpers guard
+        // their divides the same way and fall back to a pure cruise.
+        const float inv_two_accel = block.acceleration > 0.0f ? 0.5f / block.acceleration : 0.0f;
         block.feedrate_profile.entry = std::sqrt(start_v2);
         block.feedrate_profile.exit = std::sqrt(end_v2);
         block.trapezoid.cruise_feedrate = std::sqrt(cruise_v2);
-        block.trapezoid.accelerate_until = (cruise_v2 - start_v2) / (2.0f * block.acceleration);
-        block.trapezoid.decelerate_after = block.distance - (cruise_v2 - end_v2) / (2.0f * block.acceleration);
-        prev_cruise_v2 = cruise_v2;
+        block.trapezoid.accelerate_until = (cruise_v2 - start_v2) * inv_two_accel;
+        block.trapezoid.decelerate_after = block.distance - (cruise_v2 - end_v2) * inv_two_accel;
     }
     return flush_count;
 }
@@ -545,10 +557,12 @@ void GCodeProcessor::TimeMachine::calculate_time(GCodeProcessorResult& result, P
             // Integrate using the planned speeds. Reconstructing the exit speed
             // from rounded deceleration distance loses precision near a stop.
             const double cruise = block.trapezoid.cruise_feedrate;
-            const double accel_delta = cruise - block.feedrate_profile.entry;
-            const double decel_delta = cruise - block.feedrate_profile.exit;
-            motion_time = block.distance / cruise +
-                (sqr(accel_delta) + sqr(decel_delta)) / (2.0 * block.acceleration * cruise);
+            motion_time = block.distance / cruise;
+            if (block.acceleration > 0.0f) {
+                const double accel_delta = cruise - block.feedrate_profile.entry;
+                const double decel_delta = cruise - block.feedrate_profile.exit;
+                motion_time += (sqr(accel_delta) + sqr(decel_delta)) / (2.0 * block.acceleration * cruise);
+            }
         } else {
             motion_time = block.time();
         }
@@ -5209,20 +5223,30 @@ void GCodeProcessor::process_G1(const std::array<std::optional<double>, 4>& axes
         }
 
         // calculates block acceleration
-        float acceleration =
-            (m_flavor == gcfKlipper) ? (is_extrusion_only_move(delta_pos) ?
-                get_axis_max_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i), E, m_machine_config_idx) :
-                get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i))) :
-            (type == EMoveType::Travel) ? get_travel_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
-            (is_extrusion_only_move(delta_pos) ?
-                get_retract_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
-                get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)));
+        float acceleration;
+        if (m_flavor == gcfKlipper && is_extrusion_only_move(delta_pos)) {
+            // Klipper's max_extrude_only_accel. machine_max_acceleration_e is optional and some
+            // shipped profiles leave it at 0, so keep the non-zero retract fallback.
+            acceleration = get_axis_max_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i), E, m_machine_config_idx);
+            if (acceleration <= 0.0f)
+                acceleration = get_retract_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i));
+        } else
+            acceleration =
+                (m_flavor == gcfKlipper) ? get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
+                (type == EMoveType::Travel) ? get_travel_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
+                (is_extrusion_only_move(delta_pos) ?
+                    get_retract_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)) :
+                    get_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i)));
 
         //BBS
         for (unsigned char a = X; a <= E; ++a) {
             if ((a == E && !limit_extruder) || (m_flavor == gcfKlipper && (a == X || a == Y)))
                 continue;
             float axis_max_acceleration = get_axis_max_acceleration(static_cast<PrintEstimatedStatistics::ETimeMode>(i), static_cast<Axis>(a), m_machine_config_idx);
+            // An unset (0) limit means "no limit", as in the feedrate loop above. Only the Klipper
+            // planner divides by the block acceleration, so leave the Marlin path as it was.
+            if (m_flavor == gcfKlipper && axis_max_acceleration <= 0.0f)
+                continue;
             if (acceleration * std::abs(delta_pos[a]) * inv_distance > axis_max_acceleration)
                 acceleration = axis_max_acceleration / (std::abs(delta_pos[a]) * inv_distance);
         }

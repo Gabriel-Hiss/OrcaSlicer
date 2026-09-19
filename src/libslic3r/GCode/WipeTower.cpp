@@ -1931,7 +1931,7 @@ WipeTower::WipeTower(const PrintConfig& config, int plate_idx, Vec3d plate_origi
     // Orca: prime_tower_max_speed is named wipe_tower_max_purge_speed (same default/min)
     m_max_speed((float)config.wipe_tower_max_purge_speed.value*60.f),
     m_minimum_cruise_ratio_enable(config.minimum_cruise_ratio_enable.value),
-    m_minimum_cruise_ratio(config.minimum_cruise_ratio.value),
+    m_minimum_cruise_ratio((float)config.minimum_cruise_ratio.value / 100.f),
     m_accel_to_decel_enable(config.accel_to_decel_enable.value),
     m_accel_to_decel_factor(config.accel_to_decel_factor.value),
     m_printable_height(config.extruder_printable_height.values),

@@ -643,8 +643,10 @@ TEST_CASE("How fast a corner is taken does not depend on how much is extruded th
     }
 }
 
-// Klipper caps the cruise speed of a move by a pseudo acceleration of `accel * (1 - minimum_cruise_ratio)`,
-// so a move too short to reach its speed still spends that ratio of its length cruising.
+// Expected times are Klipper's own planner math (klippy/toolhead.py). For a move from rest to rest,
+// LookAheadQueue.flush() reduces to cruise_v2 = min(vmax^2, d * accel, d * pseudo_accel) with
+// pseudo_accel = accel * (1 - minimum_cruise_ratio), and Move.set_junction() to a trapezoid at accel;
+// a move too short to reach its speed still spends that ratio of its length cruising.
 namespace {
 
 constexpr double klipper_accel        = 1000.0; // make_junction_config's acceleration
@@ -729,8 +731,8 @@ TEST_CASE("Where the look-ahead flushes does not change the estimate", "[GCodeTi
 TEST_CASE("A short move into a corner is limited by the centripetal term, not the corner velocity",
           "[GCodeTiming][Klipper]")
 {
-    // A 50 mm/s square corner velocity allows 50 mm/s through the right angle; the 1 mm move
-    // into it allows sqrt(0.5 * 1 * 1000 * tan(45 deg)) = 22.4 mm/s.
+    // A 50 mm/s square corner velocity allows 50 mm/s through the right angle; the 1 mm move into it
+    // allows sqrt(0.5 * 1 * 1000 * tan(45 deg)) = 22.4 mm/s (Move.calc_junction's move_centripetal_v2).
     GCodeProcessor proc;
     run_klipper(proc, "G90\nG1 X59 Y60 F6000\nM400\nG1 X60 Y60 F9000\nG1 X60 Y100 F9000\n",
                 make_junction_config(gcfKlipper, 50.0, 0.0));

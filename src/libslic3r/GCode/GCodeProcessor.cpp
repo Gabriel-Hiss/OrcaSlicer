@@ -6461,6 +6461,8 @@ void GCodeProcessor::process_M204(const GCodeReader::GCodeLine& line)
                 return;
             value = std::min(value, travel);
         }
+        // Klipper replaces its single live max_accel for print and travel; the profile-clamping
+        // setters would diverge from the firmware when custom G-code raises the limit.
         if (value > 0.0f) {
             for (auto& machine : m_time_processor.machines)
                 machine.acceleration = machine.travel_acceleration = value;
@@ -6544,6 +6546,8 @@ void GCodeProcessor::process_SET_VELOCITY_LIMIT(const GCodeReader::GCodeLine& li
         const std::string name = boost::to_upper_copy((*it)[1].str());
         for (size_t i = 0; i < m_time_processor.machines.size(); ++i) {
             TimeMachine& machine = m_time_processor.machines[i];
+            // Klipper replaces its single live max_accel for print and travel; the profile-clamping
+            // setters would diverge from the firmware when custom G-code raises the limit.
             if (name == "ACCEL" && value > 0.0f)
                 machine.acceleration = machine.travel_acceleration = value;
             else if (name == "MINIMUM_CRUISE_RATIO" && value >= 0.0f && value < 1.0f) {

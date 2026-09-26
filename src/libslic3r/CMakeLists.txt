@@ -245,6 +245,8 @@ set(lisbslic3r_sources
     GCode/FanMover.hpp
     GCode/GCodeProcessor.cpp
     GCode/GCodeProcessor.hpp
+    GCode/HeatingTime.cpp
+    GCode/HeatingTime.hpp
     GCode/ElegooGCodeProcessorHelper.cpp
     GCode.hpp
     GCode/PchipInterpolatorHelper.cpp

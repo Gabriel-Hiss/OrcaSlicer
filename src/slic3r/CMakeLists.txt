@@ -766,6 +766,8 @@ set(SLIC3R_GUI_SOURCES
     Utils/MoonrakerPrinterAgent.hpp
     Utils/Moonraker.cpp
     Utils/Moonraker.hpp
+    Utils/HeatingCalibration.cpp
+    Utils/HeatingCalibration.hpp
     Utils/BBLCloudServiceAgent.cpp
     Utils/BBLCloudServiceAgent.hpp
     Utils/BBLPrinterAgent.cpp

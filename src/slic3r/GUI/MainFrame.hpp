@@ -68,6 +68,7 @@ namespace GUI
 {
 
 class Tab;
+class HeatingCalibrationDialog;
 class PrintHostQueueDialog;
 class Plater;
 #ifdef SLIC3R_CAD
@@ -128,7 +129,8 @@ enum class CalibKind : int
     Cornering, 
     InputShapingFreq, 
     InputShapingDamp,
-    VFA
+    VFA,
+    Heating
 };
 
 class MainFrame : public DPIFrame
@@ -473,6 +475,7 @@ public:
     Temp_Calibration_Dlg* m_temp_calib_dlg{ nullptr };
     MaxVolumetricSpeed_Test_Dlg* m_vol_test_dlg { nullptr };
     VFA_Test_Dlg* m_vfa_test_dlg { nullptr };
+    HeatingCalibrationDialog* m_heating_calib_dlg { nullptr };
     Retraction_Test_Dlg* m_retraction_calib_dlg{ nullptr };
     Input_Shaping_Freq_Test_Dlg* m_IS_freq_calib_dlg{ nullptr };
     Input_Shaping_Damp_Test_Dlg* m_IS_damp_calib_dlg{ nullptr };

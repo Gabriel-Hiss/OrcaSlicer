@@ -35,6 +35,13 @@ constexpr int    calibration_idle_timeout = 24 * 3600;
 
 std::string fmt_temp(double temperature) { return float_to_string_decimal_point(double(std::lround(temperature)), 0); }
 
+// json::value() throws on an explicit null; Klipper reports null for unset settings and unavailable sensors.
+double number_or(const json &object, const char *key, double fallback)
+{
+    const auto it = object.find(key);
+    return it != object.end() && it->is_number() ? it->get<double>() : fallback;
+}
+
 } // namespace
 
 HeatingCalibration::HeatingCalibration(Params params, StatusFn on_status)
@@ -116,11 +123,11 @@ HeatingCalibration::Reading HeatingCalibration::read_heaters() const
     const json  result = json::parse(get("/printer/objects/query?extruder=temperature,power&heater_bed=temperature,power"))["result"];
     const json &status = result["status"];
     Reading     reading;
-    reading.eventtime    = result.value("eventtime", 0.);
-    reading.nozzle       = status["extruder"].value("temperature", 0.);
-    reading.nozzle_power = status["extruder"].value("power", 0.);
-    reading.bed          = status["heater_bed"].value("temperature", 0.);
-    reading.bed_power    = status["heater_bed"].value("power", 0.);
+    reading.eventtime    = number_or(result, "eventtime", 0.);
+    reading.nozzle       = number_or(status["extruder"], "temperature", 0.);
+    reading.nozzle_power = number_or(status["extruder"], "power", 0.);
+    reading.bed          = number_or(status["heater_bed"], "temperature", 0.);
+    reading.bed_power    = number_or(status["heater_bed"], "power", 0.);
     return reading;
 }
 
@@ -298,9 +305,8 @@ HeatingCalibration::Result HeatingCalibration::run()
         validate_target("extruder", nozzle_target, m_nozzle);
         validate_target("heater_bed", bed_target, m_bed);
     }
-    const double idle_timeout = status.contains("idle_timeout") && status["idle_timeout"].contains("idle_timeout")
-                                    ? status["idle_timeout"]["idle_timeout"].get<double>()
-                                    : settings.contains("idle_timeout") ? settings["idle_timeout"].value("timeout", 600.) : 600.;
+    const double idle_timeout = number_or(status.value("idle_timeout", json::object()), "idle_timeout",
+                                          settings.contains("idle_timeout") ? number_or(settings["idle_timeout"], "timeout", 600.) : 600.);
 
     const json &toolhead = status["toolhead"];
     const Vec2d axis_min(toolhead["axis_minimum"][0].get<double>(), toolhead["axis_minimum"][1].get<double>());

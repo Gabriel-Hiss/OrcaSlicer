@@ -99,16 +99,10 @@ HeatingCalibrationDialog::HeatingCalibrationDialog(wxWindow *parent)
     m_nozzle_max  = add_input(grid, _L("Nozzle maximum"), celsius, true);
     m_bed_min     = add_input(grid, _L("Bed minimum"), celsius, true);
     m_bed_max     = add_input(grid, _L("Bed maximum"), celsius, true);
-    m_nozzle_min->GetTextCtrl()->SetValue("50");
-    m_nozzle_max->GetTextCtrl()->SetValue("250");
-    m_bed_min->GetTextCtrl()->SetValue("35");
+    m_nozzle_min->GetTextCtrl()->SetValue("30");
+    m_nozzle_max->GetTextCtrl()->SetValue("300");
+    m_bed_min->GetTextCtrl()->SetValue("30");
     m_bed_max->GetTextCtrl()->SetValue("100");
-
-    grid          = add_section(_L("Measurement"));
-    m_targets     = add_input(grid, _L("Target temperatures"), wxEmptyString, true);
-    m_repetitions = add_input(grid, _L("Repetitions"), wxEmptyString, true);
-    m_targets->GetTextCtrl()->SetValue("4");
-    m_repetitions->GetTextCtrl()->SetValue("3");
 
     m_progress     = new wxStaticBoxSizer(new LabeledStaticBox(this, _L("Progress")), wxVERTICAL);
     m_status       = new wxStaticText(this, wxID_ANY, wxEmptyString);
@@ -205,14 +199,12 @@ void HeatingCalibrationDialog::fill_from_preset()
 
 bool HeatingCalibrationDialog::read_params(HeatingCalibration::Params &params)
 {
-    long port = 0, targets = 0, repetitions = 0;
+    long port = 0;
     const bool read = m_port->GetTextCtrl()->GetValue().ToLong(&port) &&
                       m_nozzle_min->GetTextCtrl()->GetValue().ToDouble(&params.nozzle_min) &&
                       m_nozzle_max->GetTextCtrl()->GetValue().ToDouble(&params.nozzle_max) &&
                       m_bed_min->GetTextCtrl()->GetValue().ToDouble(&params.bed_min) &&
-                      m_bed_max->GetTextCtrl()->GetValue().ToDouble(&params.bed_max) &&
-                      m_targets->GetTextCtrl()->GetValue().ToLong(&targets) &&
-                      m_repetitions->GetTextCtrl()->GetValue().ToLong(&repetitions);
+                      m_bed_max->GetTextCtrl()->GetValue().ToDouble(&params.bed_max);
     params.host = into_u8(m_host->GetTextCtrl()->GetValue().Trim().Trim(false));
     params.use_https = boost::istarts_with(params.host, "https://");
     if (params.use_https)
@@ -221,10 +213,8 @@ bool HeatingCalibrationDialog::read_params(HeatingCalibration::Params &params)
         params.host.erase(0, 7);
     params.api_key    = into_u8(m_api_key->GetTextCtrl()->GetValue().Trim().Trim(false));
     params.bed_area = m_bed_area;
-    if (!read || params.host.empty() || port <= 0 || port > 65535 || targets < 1 || targets > 20 ||
-        repetitions < 1 || repetitions > 20 || params.nozzle_min >= params.nozzle_max || params.bed_min >= params.bed_max) {
-        MessageDialog(this, _L("Enter a printer IP, a port from 1 to 65535, minimum temperatures below maximum temperatures, "
-                               "and 1 to 20 targets and repetitions."),
+    if (!read || params.host.empty() || port <= 0 || port > 65535 || params.nozzle_min >= params.nozzle_max || params.bed_min >= params.bed_max) {
+        MessageDialog(this, _L("Enter a printer IP, a port from 1 to 65535, and minimum temperatures below maximum temperatures."),
                       wxEmptyString, wxICON_WARNING | wxOK)
             .ShowModal();
         return false;
@@ -236,8 +226,6 @@ bool HeatingCalibrationDialog::read_params(HeatingCalibration::Params &params)
         return false;
     }
     params.port        = int(port);
-    params.targets     = int(targets);
-    params.repetitions = int(repetitions);
     return true;
 }
 
@@ -251,10 +239,9 @@ void HeatingCalibrationDialog::on_start()
     HeatingCalibration::Params params;
     if (!read_params(params))
         return;
-    const int cycles = int(HeatingCalibration::cycle_targets(params).size()) * params.repetitions;
     const wxString question = format_wxstr(_L(u8"The printer at %1% will home and move the nozzle above the bed center. "
-                                              u8"Clear the bed before starting %2% heating cycles up to %3% \u2103 (nozzle) and %4% \u2103 (bed). Continue?"),
-                                           params.host, cycles, int(params.nozzle_max), int(params.bed_max));
+                                              u8"Clear the bed before starting one heating pass up to %2% \u2103 (nozzle) and %3% \u2103 (bed). Continue?"),
+                                           params.host, int(params.nozzle_max), int(params.bed_max));
     if (MessageDialog(this, question, _L("Calibrate heating"), wxICON_QUESTION | wxYES_NO).ShowModal() != wxID_YES)
         return;
 
@@ -299,10 +286,10 @@ void HeatingCalibrationDialog::on_start()
 
 void HeatingCalibrationDialog::on_status(const HeatingCalibration::Status &status)
 {
-    if (status.cycle > 0) {
-        m_status->SetLabel(format_wxstr(_L("%1% (%2% of %3%)"), status.message, status.cycle, status.cycles));
-        m_gauge->SetRange(std::max(status.cycles, 1));
-        m_gauge->SetValue(status.cycle - 1);
+    if (status.step > 0) {
+        m_status->SetLabel(format_wxstr(_L("%1% (%2% of %3%)"), status.message, status.step, status.steps));
+        m_gauge->SetRange(std::max(status.steps, 1));
+        m_gauge->SetValue(status.step - 1);
     } else
         m_status->SetLabel(from_u8(status.message));
     m_temperatures->SetLabel(format_wxstr(_L(u8"Nozzle %1% / %2% \u2103, bed %3% / %4% \u2103"), int(std::lround(status.nozzle_temperature)),
@@ -382,7 +369,7 @@ void HeatingCalibrationDialog::on_close(wxCloseEvent &event)
 
 void HeatingCalibrationDialog::set_running(bool running)
 {
-    for (TextInput *input : {m_host, m_port, m_api_key, m_nozzle_min, m_nozzle_max, m_bed_min, m_bed_max, m_targets, m_repetitions})
+    for (TextInput *input : {m_host, m_port, m_api_key, m_nozzle_min, m_nozzle_max, m_bed_min, m_bed_max})
         input->Enable(!running);
     m_start_btn->SetLabel(running ? _L("Stop") : _L("Start"));
     m_apply_btn->Show(!running && m_result.has_value());

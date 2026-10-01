@@ -3,6 +3,11 @@
 #include "libslic3r/GCode/HeatingTime.hpp"
 
 #include <cmath>
+#include <fstream>
+#include <optional>
+#include <sstream>
+#include <string>
+#include <vector>
 
 using namespace Slic3r;
 using Catch::Matchers::WithinAbs;
@@ -85,34 +90,180 @@ TEST_CASE("Heating stops accumulating when the first extrusion begins", "[Heatin
     CHECK_THAT(times.wait, WithinAbs(100., 1e-9));
 }
 
-TEST_CASE("Fitting recovers the full-power rate and the settle time of a heater", "[HeatingTime]")
-{
-    // Reduced power near the target adds 15 s beyond the full-power ramp; release adds 4 s.
-    auto make_run = [](double start, double target) {
-        HeatingRun run;
-        run.target = target;
-        const double knee = target - 10.;
-        const double t_knee = (knee - start) / 2.;
-        const double t_target = t_knee + 20.;
-        for (double t = 0.; t <= t_target + 10.; t += 0.25) {
-            const double temperature = t < t_knee ? start + 2. * t : std::min(target, knee + 0.5 * (t - t_knee));
-            run.samples.push_back({t, temperature, t < t_knee ? 1. : 0.4});
-        }
-        run.release = t_target + 4.;
-        return run;
-    };
-    std::vector<HeatingRun> runs = {make_run(30., 100.), make_run(30., 200.), make_run(32., 200.)};
-    for (HeatingRun &run : runs) {
-        run.release += 5.;
-        for (HeatingSample &sample : run.samples)
-            sample.time += 5.;
-    }
-    const HeaterCurvePoints points = fit_heater_curve(runs, 1.);
-    const HeaterCurve curve(points.ramp, points.settle);
-    REQUIRE(curve.valid());
+namespace {
 
-    CHECK_THAT(curve.ramp_time(180.) - curve.ramp_time(40.), WithinAbs(70., 0.1));
-    REQUIRE(points.settle.size() == 2);
-    CHECK_THAT(curve.heat_time(30., 100.), WithinAbs(35. + 15. + 4., 0.2));
-    CHECK_THAT(curve.heat_time(30., 200.), WithinAbs(85. + 15. + 4., 0.2));
+// One pass recorded on a Klipper printer (Creality Ender-3 V3 KE): both heaters from cold, the nozzle to 150 °C
+// held for 120 s and then to 290 °C, the bed to 100 °C. The waits below are what Klipper's M109/M190 took.
+struct RecordedPass
+{
+    std::vector<HeatingSample> nozzle, bed;
+};
+
+RecordedPass load_recorded_pass()
+{
+    RecordedPass pass;
+    std::ifstream file(std::string(TEST_DATA_DIR) + "/heating_pass.csv");
+    std::string   line;
+    std::getline(file, line);
+    while (std::getline(file, line)) {
+        std::istringstream in(line);
+        std::string        cell;
+        double             v[5];
+        for (double &value : v) {
+            std::getline(in, cell, ',');
+            value = std::stod(cell);
+        }
+        pass.nozzle.push_back({v[0], v[1], v[2]});
+        pass.bed.push_back({v[0], v[3], v[4]});
+    }
+    return pass;
+}
+
+HeaterControl nozzle_control()
+{
+    HeaterControl control;
+    control.kp = 23.535;
+    control.ki = 2.21;
+    control.kd = 62.663;
+    return control;
+}
+
+HeaterControl bed_control()
+{
+    HeaterControl control;
+    control.kp = 66.917;
+    control.ki = 1.121;
+    control.kd = 998.735;
+    return control;
+}
+
+HeaterModel hand_model()
+{
+    HeaterModel model;
+    model.gain       = 3.;
+    model.loss       = 0.004;
+    model.loss2      = 1e-5;
+    model.sensor_lag = 2.;
+    model.delay      = 1.;
+    model.ambient    = 25.;
+    return model;
+}
+
+} // namespace
+
+TEST_CASE("A heater that cannot reach its target never releases the wait", "[HeatingTime]")
+{
+    HeaterModel weak = hand_model();
+    weak.gain        = 0.1;
+    WaitScenario scenario;
+    scenario.start_temperature = 25.;
+    scenario.target            = 250.;
+    CHECK_FALSE(simulate_wait(weak, nozzle_control(), scenario).has_value());
+}
+
+TEST_CASE("A PID wait releases after the full-power ramp reaches the target and a watermark wait before", "[HeatingTime]")
+{
+    const HeaterModel   model = hand_model();
+    WaitScenario        scenario;
+    scenario.start_temperature = 25.;
+    scenario.target            = 200.;
+
+    const HeaterCurvePoints points = heater_curve(model, nozzle_control(), 25., 250., {});
+    const HeaterCurve       ramp(points.ramp, {});
+    REQUIRE(ramp.valid());
+    const std::optional<double> pid = simulate_wait(model, nozzle_control(), scenario);
+    REQUIRE(pid.has_value());
+    CHECK(*pid > ramp.heat_time(25., 200., false));
+
+    HeaterControl watermark = nozzle_control();
+    watermark.pid           = false;
+    const std::optional<double> hysteresis = simulate_wait(model, watermark, scenario);
+    REQUIRE(hysteresis.has_value());
+    CHECK(*hysteresis < *pid);
+}
+
+TEST_CASE("Measured waits shift the settle time by the mean miss of the model", "[HeatingTime]")
+{
+    const HeaterModel model = hand_model();
+    WaitScenario      scenario;
+    scenario.start_temperature = 25.;
+    scenario.target            = 200.;
+    const double simulated     = *simulate_wait(model, nozzle_control(), scenario);
+
+    const HeaterCurvePoints plain   = heater_curve(model, nozzle_control(), 25., 250., {});
+    const HeaterCurvePoints shifted = heater_curve(model, nozzle_control(), 25., 250., {{scenario, simulated + 6.}});
+    REQUIRE(plain.settle.size() == shifted.settle.size());
+    REQUIRE_FALSE(plain.settle.empty());
+    for (size_t i = 0; i < plain.settle.size(); ++i)
+        CHECK_THAT(shifted.settle[i].y() - plain.settle[i].y(), WithinAbs(6., 1e-9));
+}
+
+TEST_CASE("A cold heater start uses the cold settle points and a warm start does not", "[HeatingTime]")
+{
+    const HeaterCurve curve({{30., 0.}, {300., 270.}}, {{150., 10.}, {300., 10.}, {-150., 25.}, {-300., 25.}});
+    CHECK_THAT(curve.heat_time(35., 150.), WithinAbs(115. + 25., 1e-9));
+    CHECK_THAT(curve.heat_time(100., 200.), WithinAbs(100. + 10., 1e-9));
+    CHECK_THAT(curve.settle_time(200., true), WithinAbs(25., 1e-9));
+    CHECK_THAT(curve.settle_time(200.), WithinAbs(10., 1e-9));
+
+    const HeaterCurve without_cold({{30., 0.}, {300., 270.}}, {{150., 10.}, {300., 10.}});
+    CHECK_THAT(without_cold.heat_time(35., 150.), WithinAbs(115. + 10., 1e-9));
+}
+
+TEST_CASE("Waits timed from a warm heater set the warm settle time exactly", "[HeatingTime]")
+{
+    const HeaterModel model = hand_model();
+    WaitScenario      warm;
+    warm.start_temperature = 25.;
+    warm.hold_target       = 150.;
+    warm.command_time      = 300.;
+    warm.target            = 200.;
+
+    const HeaterCurvePoints points = heater_curve(model, nozzle_control(), 25., 250., {{warm, 36.}});
+    const HeaterCurve       curve(points.ramp, points.settle);
+    REQUIRE(curve.valid());
+    CHECK_THAT(curve.heat_time(150., 200.), WithinAbs(36., 1e-9));
+    CHECK(curve.settle_time(200., true) != curve.settle_time(200.));
+}
+
+TEST_CASE("A model fitted to a recorded pass predicts the waits Klipper took", "[HeatingTime][Recorded]")
+{
+    const RecordedPass pass = load_recorded_pass();
+    REQUIRE(pass.nozzle.size() > 1000);
+
+    const HeaterModel nozzle = fit_heater_model(pass.nozzle, 22.5, true);
+    const HeaterModel bed    = fit_heater_model(pass.bed, 22.5, false);
+    REQUIRE(nozzle.valid());
+    REQUIRE(bed.valid());
+    CHECK(nozzle.rms < 4.);
+    CHECK(bed.rms < 1.);
+
+    WaitScenario cold;
+    cold.start_temperature = pass.nozzle.front().temperature;
+    cold.target            = 150.;
+    const std::optional<double> to_mid = simulate_wait(nozzle, nozzle_control(), cold);
+    REQUIRE(to_mid.has_value());
+    CHECK_THAT(*to_mid, WithinAbs(70.8, 10.)); // Klipper: 70.8 s from cold to 150 °C
+
+    WaitScenario held = cold;
+    held.hold_target  = 150.;
+    held.command_time = 191.4;
+    held.target       = 290.;
+    const std::optional<double> to_max = simulate_wait(nozzle, nozzle_control(), held);
+    REQUIRE(to_max.has_value());
+    CHECK_THAT(*to_max, WithinAbs(96.1, 10.)); // Klipper: 96.1 s from 150 °C held to 290 °C
+
+    WaitScenario bed_wait;
+    bed_wait.start_temperature = pass.bed.front().temperature;
+    bed_wait.hold_target       = 100.;
+    bed_wait.command_time      = 287.7;
+    bed_wait.target            = 100.;
+    const std::optional<double> bed_release = simulate_wait(bed, bed_control(), bed_wait);
+    REQUIRE(bed_release.has_value());
+    CHECK_THAT(287.7 + *bed_release, WithinAbs(307., 20.)); // Klipper released the bed 307 s after the start
+
+    const HeaterCurvePoints points = heater_curve(bed, bed_control(), bed_wait.start_temperature, 100., {});
+    const HeaterCurve       curve(points.ramp, points.settle);
+    REQUIRE(curve.valid());
+    CHECK_THAT(curve.heat_time(bed_wait.start_temperature, 100.), WithinAbs(307., 30.));
 }

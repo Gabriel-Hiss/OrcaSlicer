@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
+#include <functional>
 
 namespace Slic3r {
 
@@ -88,32 +88,41 @@ HeaterCurve::HeaterCurve(std::vector<Vec2d> ramp, std::vector<Vec2d> settle)
             m_ramp.push_back(p);
 
     std::sort(settle.begin(), settle.end(), by_temperature);
+    std::vector<Vec2d> cold;
     for (const Vec2d &p : settle)
-        if (std::isfinite(p.x()) && std::isfinite(p.y()) &&
-            (m_settle.empty() || p.x() > m_settle.back().x()))
+        if (p.x() < 0.) {
+            if (std::isfinite(p.x()) && std::isfinite(p.y()))
+                cold.emplace_back(-p.x(), std::max(0., p.y()));
+        } else if (std::isfinite(p.x()) && std::isfinite(p.y()) && (m_settle.empty() || p.x() > m_settle.back().x()))
             m_settle.emplace_back(p.x(), std::max(0., p.y()));
+    std::sort(cold.begin(), cold.end(), by_temperature);
+    for (const Vec2d &p : cold)
+        if (m_cold_settle.empty() || p.x() > m_cold_settle.back().x())
+            m_cold_settle.push_back(p);
 }
 
 double HeaterCurve::ramp_time(double temperature) const { return interpolate(m_ramp, temperature, 0); }
 
 double HeaterCurve::ramp_temperature(double seconds) const { return interpolate(m_ramp, seconds, 1); }
 
-double HeaterCurve::settle_time(double target) const
+double HeaterCurve::settle_time(double target, bool cold) const
 {
-    if (m_settle.empty())
+    const std::vector<Vec2d> &points = cold && !m_cold_settle.empty() ? m_cold_settle : m_settle;
+    if (points.empty())
         return 0.;
-    if (m_settle.size() == 1 || target <= m_settle.front().x())
-        return m_settle.front().y();
-    if (target >= m_settle.back().x())
-        return m_settle.back().y();
-    return interpolate(m_settle, target, 0);
+    if (points.size() == 1 || target <= points.front().x())
+        return points.front().y();
+    if (target >= points.back().x())
+        return points.back().y();
+    return interpolate(points, target, 0);
 }
 
 double HeaterCurve::heat_time(double from, double to, bool settle) const
 {
     if (!valid() || to <= from)
         return 0.;
-    return ramp_time(to) - ramp_time(from) + (settle ? settle_time(to) : 0.);
+    const bool cold = from <= m_ramp.front().x() + 10.;
+    return ramp_time(to) - ramp_time(from) + (settle ? settle_time(to, cold) : 0.);
 }
 
 HeatingTimes estimate_heating_times(const std::vector<HeatingEvent> &events,
@@ -150,62 +159,373 @@ HeatingTimes estimate_heating_times(const std::vector<HeatingEvent> &events,
     return times;
 }
 
-HeaterCurvePoints fit_heater_curve(const std::vector<HeatingRun> &runs, double max_power, double step)
-{
-    const double full_power = 0.95 * max_power;
+namespace {
 
-    // Each band records total seconds and number of full-power crossings.
-    std::map<long, std::pair<double, int>> bands;
-    for (const HeatingRun &run : runs) {
-        const std::vector<HeatingSample> &samples = run.samples;
-        long   last_edge = 0;
-        double last_edge_time = 0.;
-        bool   has_edge = false;
-        for (size_t i = 1; i < samples.size(); ++i) {
-            const HeatingSample &a = samples[i - 1];
-            const HeatingSample &b = samples[i];
-            if (a.power < full_power || b.power < full_power) {
-                has_edge = false;
-                continue;
-            }
-            if (b.temperature <= a.temperature)
-                continue;
-            for (long edge = long(std::floor(a.temperature / step)) + 1; edge * step <= b.temperature; ++edge) {
-                const double t = a.time + (edge * step - a.temperature) * (b.time - a.time) / (b.temperature - a.temperature);
-                if (has_edge && last_edge == edge - 1) {
-                    std::pair<double, int> &band = bands[edge - 1];
-                    band.first += t - last_edge_time;
-                    ++band.second;
-                }
-                last_edge      = edge;
-                last_edge_time = t;
-                has_edge       = true;
+constexpr double sim_step   = 0.05; // s
+constexpr double sim_report = 0.3;  // s, Klipper's ADC report interval
+constexpr double wait_poll  = 1.;   // s, Klipper checks a M109/M190 wait once a second
+constexpr double wait_limit = 900.; // s
+
+class HeaterPlant
+{
+public:
+    HeaterPlant(const HeaterModel &model, double start)
+        : m_model(model), m_block(start), m_mass(start), m_sensor(start), m_delay(size_t(std::lround(model.delay / sim_step)), 0.)
+    {}
+
+    void step(double power)
+    {
+        if (!m_delay.empty()) {
+            std::swap(power, m_delay[m_next]);
+            m_next = (m_next + 1) % m_delay.size();
+        }
+        const double x       = m_block - m_model.ambient;
+        const double to_mass = m_model.to_mass * (m_block - m_mass);
+        const double d_block = m_model.gain * power - m_model.loss * x - m_model.loss2 * x * std::abs(x) - to_mass;
+        const double d_mass  = m_model.from_mass * (m_block - m_mass) - m_model.mass_loss * (m_mass - m_model.ambient);
+        m_block += d_block * sim_step;
+        m_mass += d_mass * sim_step;
+        m_sensor += (m_block - m_sensor) * (m_model.sensor_lag > sim_step ? sim_step / m_model.sensor_lag : 1.);
+    }
+
+    double sensor() const { return m_sensor; }
+
+private:
+    const HeaterModel  &m_model;
+    double              m_block, m_mass, m_sensor;
+    std::vector<double> m_delay;
+    size_t              m_next{0};
+};
+
+// Klipper's heater control loop and the temperature its waits look at (klippy/extras/heaters.py).
+class KlipperHeater
+{
+public:
+    KlipperHeater(const HeaterModel &model, const HeaterControl &control, double start)
+        : m_plant(model, start), m_control(control), m_prev_temp(start), m_smoothed(start),
+          m_integ_max(control.ki > 0. ? control.max_power / (control.ki / 255.) : 0.)
+    {}
+
+    void set_target(double target) { m_target = target; }
+
+    void run(double until)
+    {
+        while (m_time < until - 1e-9) {
+            m_plant.step(m_power);
+            m_time += sim_step;
+            if (m_time >= m_next_report - 1e-9) {
+                report();
+                m_next_report += sim_report;
             }
         }
     }
 
-    HeaterCurvePoints points;
-    for (const auto &[band, sum_count] : bands) {
-        if (points.ramp.empty())
-            points.ramp.emplace_back(band * step, 0.);
-        else if (std::abs(points.ramp.back().x() - band * step) > 1e-6)
-            break; // only fit consecutive bands from the coldest crossing
-        points.ramp.emplace_back((band + 1) * step, points.ramp.back().y() + sum_count.first / sum_count.second);
+    bool busy() const
+    {
+        if (m_control.pid)
+            return std::abs(m_target - m_smoothed) > 1. || std::abs(m_deriv) > 0.1;
+        return m_smoothed < m_target - m_control.max_delta;
     }
 
-    const HeaterCurve ramp(points.ramp, {});
-    if (!ramp.valid())
-        return {};
-    std::map<double, std::pair<double, int>> settles;
-    for (const HeatingRun &run : runs) {
-        if (run.samples.empty() || run.samples.front().temperature >= run.target)
-            continue;
-        std::pair<double, int> &settle = settles[run.target];
-        settle.first += run.release - run.samples.front().time - ramp.heat_time(run.samples.front().temperature, run.target, false);
-        ++settle.second;
+private:
+    void report()
+    {
+        const double raw  = m_plant.sensor();
+        const double dt   = m_time - m_prev_time;
+        const double diff = raw - m_prev_temp;
+        double       out  = 0.;
+        if (m_control.pid) {
+            m_deriv = dt >= m_control.smooth_time ? diff / dt : (m_deriv * (m_control.smooth_time - dt) + diff) / m_control.smooth_time;
+            const double error = m_target - raw;
+            const double integ = std::clamp(m_integ + error * dt, 0., m_integ_max);
+            const double co    = m_control.kp / 255. * error + m_control.ki / 255. * integ - m_control.kd / 255. * m_deriv;
+            out                = std::clamp(co, 0., m_control.max_power);
+            if (co == out)
+                m_integ = integ;
+        } else {
+            if (m_heating && raw >= m_target + m_control.max_delta)
+                m_heating = false;
+            else if (!m_heating && raw <= m_target - m_control.max_delta)
+                m_heating = true;
+            out = m_heating ? m_control.max_power : 0.;
+        }
+        m_power = m_target > 0. ? out : 0.;
+        m_smoothed += (raw - m_smoothed) * std::min((m_time - m_last_report) / m_control.smooth_time, 1.);
+        m_prev_temp   = raw;
+        m_prev_time   = m_time;
+        m_last_report = m_time;
     }
-    for (const auto &[target, sum_count] : settles)
-        points.settle.emplace_back(target, std::max(0., sum_count.first / sum_count.second));
+
+    HeaterPlant         m_plant;
+    HeaterControl       m_control;
+    double              m_target{0.}, m_power{0.}, m_time{0.}, m_next_report{sim_report}, m_last_report{0.};
+    double              m_prev_temp, m_prev_time{0.}, m_deriv{0.}, m_integ{0.}, m_smoothed;
+    double              m_integ_max;
+    bool                m_heating{false};
+};
+
+std::vector<double> nelder_mead(const std::function<double(const std::vector<double> &)> &cost, std::vector<double> x0,
+                                int iterations)
+{
+    const size_t                     n = x0.size();
+    std::vector<std::vector<double>> pts{x0};
+    for (size_t i = 0; i < n; ++i) {
+        std::vector<double> p = x0;
+        p[i] += 0.3 * std::abs(p[i]) + 1e-5;
+        pts.push_back(p);
+    }
+    std::vector<double> vals;
+    for (const auto &p : pts)
+        vals.push_back(cost(p));
+
+    for (int it = 0; it < iterations; ++it) {
+        std::vector<size_t> order(pts.size());
+        for (size_t i = 0; i < order.size(); ++i)
+            order[i] = i;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return vals[a] < vals[b]; });
+        std::vector<std::vector<double>> sorted_pts;
+        std::vector<double>              sorted_vals;
+        for (size_t i : order) {
+            sorted_pts.push_back(pts[i]);
+            sorted_vals.push_back(vals[i]);
+        }
+        pts = std::move(sorted_pts);
+        vals = std::move(sorted_vals);
+        if (std::abs(vals.back() - vals.front()) < 1e-7)
+            break;
+
+        std::vector<double> centroid(n, 0.);
+        for (size_t i = 0; i < n; ++i)
+            for (size_t k = 0; k < n; ++k)
+                centroid[k] += pts[i][k] / double(n);
+        auto toward = [&](double factor) {
+            std::vector<double> p(n);
+            for (size_t k = 0; k < n; ++k)
+                p[k] = centroid[k] + factor * (centroid[k] - pts.back()[k]);
+            return p;
+        };
+        const std::vector<double> reflected = toward(1.);
+        const double              fr        = cost(reflected);
+        if (fr < vals.front()) {
+            const std::vector<double> expanded = toward(2.);
+            const double              fe       = cost(expanded);
+            pts.back()  = fe < fr ? expanded : reflected;
+            vals.back() = std::min(fe, fr);
+        } else if (fr < vals[vals.size() - 2]) {
+            pts.back()  = reflected;
+            vals.back() = fr;
+        } else {
+            const std::vector<double> contracted = toward(-0.5);
+            const double              fc         = cost(contracted);
+            if (fc < vals.back()) {
+                pts.back()  = contracted;
+                vals.back() = fc;
+            } else {
+                for (size_t i = 1; i < pts.size(); ++i) {
+                    for (size_t k = 0; k < n; ++k)
+                        pts[i][k] = pts[0][k] + 0.5 * (pts[i][k] - pts[0][k]);
+                    vals[i] = cost(pts[i]);
+                }
+            }
+        }
+    }
+    size_t best = 0;
+    for (size_t i = 1; i < pts.size(); ++i)
+        if (vals[i] < vals[best])
+            best = i;
+    return pts[best];
+}
+
+HeaterModel unpack_model(const std::vector<double> &p, bool two_masses, double ambient)
+{
+    HeaterModel model;
+    model.gain       = p[0];
+    model.loss       = p[1];
+    model.loss2      = p[2];
+    model.sensor_lag = p[3];
+    model.delay      = p[4];
+    if (two_masses) {
+        model.to_mass   = p[5];
+        model.from_mass = p[6];
+        model.mass_loss = p[7];
+    }
+    model.ambient = ambient;
+    return model;
+}
+
+} // namespace
+
+HeaterModel fit_heater_model(const std::vector<HeatingSample> &samples, double ambient, bool two_masses, double smooth_time)
+{
+    if (samples.size() < 20 || samples.back().time - samples.front().time < 30.)
+        return {};
+
+    const double origin = samples.front().time;
+    const double start  = samples.front().temperature;
+    const size_t n      = size_t((samples.back().time - origin) / sim_step) + 1;
+    std::vector<double> power(n), measured(n);
+    for (size_t i = 0, j = 0; i < n; ++i) {
+        const double t = origin + double(i) * sim_step;
+        while (j + 1 < samples.size() && samples[j + 1].time <= t)
+            ++j;
+        const HeatingSample &a = samples[j];
+        const HeatingSample &b = samples[std::min(j + 1, samples.size() - 1)];
+        const double         f = b.time > a.time ? std::clamp((t - a.time) / (b.time - a.time), 0., 1.) : 0.;
+        power[i]    = a.power + f * (b.power - a.power);
+        measured[i] = a.temperature + f * (b.temperature - a.temperature);
+    }
+
+    double max_power = 0.;
+    for (const HeatingSample &s : samples)
+        max_power = std::max(max_power, s.power);
+    if (max_power <= 0.)
+        return {};
+
+    // Starting guesses from the pass: the steepest full-power climb, and the power that holds the last temperature.
+    double max_slope = 0.;
+    for (size_t i = 0, j = 0; i < samples.size(); ++i) {
+        while (j < samples.size() && samples[j].time < samples[i].time + 2.)
+            ++j;
+        if (j >= samples.size())
+            break;
+        bool full = true;
+        for (size_t k = i; k <= j; ++k)
+            full = full && samples[k].power >= 0.9 * max_power;
+        if (full)
+            max_slope = std::max(max_slope, (samples[j].temperature - samples[i].temperature) / (samples[j].time - samples[i].time));
+    }
+    const double gain0 = std::max(1.1 * max_slope / max_power, 0.05);
+    double       end_power = 0., end_temp = 0.;
+    size_t       end_count = 0;
+    for (size_t i = samples.size(); i-- > 0 && samples.back().time - samples[i].time <= 15.;) {
+        end_power += samples[i].power;
+        end_temp += samples[i].temperature;
+        ++end_count;
+    }
+    end_power /= double(end_count);
+    end_temp /= double(end_count);
+    const double rise = end_temp - ambient;
+    const double budget = end_power * gain0;
+    const double loss0  = rise > 5. && budget > 0. ? 0.5 * budget / rise : 0.002;
+    const double loss20 = rise > 5. && budget > 0. ? 0.5 * budget / (rise * rise) : 0.;
+
+    const double smoothing = std::min(sim_report / smooth_time, 1.);
+    auto cost = [&](const std::vector<double> &p) {
+        for (double v : p)
+            if (!(v >= 0.))
+                return 1e9;
+        if (p[0] > 30. || p[3] > 20. || p[4] > 8.)
+            return 1e9;
+        const HeaterModel model = unpack_model(p, two_masses, ambient);
+        HeaterPlant       plant(model, start);
+        const size_t      lag = size_t(std::lround(sim_report / sim_step));
+        double            smoothed = start, sum = 0.;
+        for (size_t i = 0; i < n; ++i) {
+            plant.step(power[i]);
+            if (i > 0 && i % lag == 0)
+                smoothed += (plant.sensor() - smoothed) * smoothing;
+            const double e = smoothed - measured[i];
+            sum += e * e;
+        }
+        const double rms = std::sqrt(sum / double(n));
+        return std::isfinite(rms) ? rms : 1e9;
+    };
+
+    const std::vector<std::vector<double>> starts = {
+        {gain0, loss0, loss20, 2., 1., 0.03, 0.05, 0.001},
+        {gain0, loss0, loss20, 5., 0.5, 0.03, 0.05, 0.001},
+        {gain0, 1.5 * loss0, 0.5 * loss20, 3., 1.5, 0.02, 0.03, 0.002},
+    };
+    HeaterModel best;
+    best.rms = 1e9;
+    for (std::vector<double> start_p : starts) {
+        start_p.resize(two_masses ? 8 : 5);
+        const std::vector<double> p   = nelder_mead(cost, start_p, 1500);
+        const double              rms = cost(p);
+        if (rms < best.rms) {
+            best     = unpack_model(p, two_masses, ambient);
+            best.rms = rms;
+        }
+    }
+    return best.rms < 1e9 ? best : HeaterModel();
+}
+
+std::optional<double> simulate_wait(const HeaterModel &model, const HeaterControl &control, const WaitScenario &scenario)
+{
+    KlipperHeater heater(model, control, scenario.start_temperature);
+    heater.set_target(scenario.hold_target);
+    heater.run(scenario.command_time);
+    heater.set_target(scenario.target);
+    for (double t = scenario.command_time; t - scenario.command_time < wait_limit; t += wait_poll) {
+        heater.run(t);
+        if (!heater.busy())
+            return t - scenario.command_time;
+    }
+    return std::nullopt;
+}
+
+HeaterCurvePoints heater_curve(const HeaterModel &model, const HeaterControl &control, double start_temperature,
+                               double max_target, const std::vector<WaitAnchor> &anchors)
+{
+    constexpr double band = 5.;
+    HeaterCurvePoints points;
+
+    HeaterPlant plant(model, start_temperature);
+    double      smoothed = start_temperature, next_band = std::ceil((start_temperature + 0.5) / band) * band;
+    const double smoothing = std::min(sim_report / control.smooth_time, 1.);
+    const size_t lag       = size_t(std::lround(sim_report / sim_step));
+    for (size_t i = 1; double(i) * sim_step < wait_limit && next_band <= max_target; ++i) {
+        plant.step(control.max_power);
+        if (i % lag == 0)
+            smoothed += (plant.sensor() - smoothed) * smoothing;
+        for (; next_band <= smoothed && next_band <= max_target; next_band += band)
+            points.ramp.emplace_back(next_band, double(i) * sim_step);
+    }
+    if (points.ramp.size() < 2)
+        return {};
+    const double origin = points.ramp.front().y();
+    for (Vec2d &p : points.ramp)
+        p.y() -= origin;
+    const HeaterCurve ramp(points.ramp, {});
+
+    // A wait timed from a warm nozzle gives the settle time directly. The rest only shift the simulated waits.
+    std::map<double, std::pair<double, int>> measured;
+    double bias = 0.;
+    size_t counted = 0;
+    for (const WaitAnchor &anchor : anchors) {
+        const WaitScenario &scenario = anchor.scenario;
+        if (scenario.hold_target > 0. && scenario.hold_target < scenario.target) {
+            std::pair<double, int> &sum = measured[scenario.target];
+            sum.first += std::max(0., anchor.seconds - ramp.heat_time(scenario.hold_target, scenario.target, false));
+            ++sum.second;
+        } else if (const std::optional<double> simulated = simulate_wait(model, control, scenario)) {
+            bias += anchor.seconds - *simulated;
+            ++counted;
+        }
+    }
+    bias = counted > 0 ? std::clamp(bias / double(counted), -15., 15.) : 0.;
+    const double first = std::ceil((start_temperature + 0.3 * (max_target - start_temperature)) / 10.) * 10.;
+    std::vector<double> targets;
+    for (double target = first; target < max_target; target += 10.)
+        targets.push_back(target);
+    targets.push_back(max_target);
+    // Simulated from the cold start, shifted by how far the model missed the cold waits.
+    std::vector<Vec2d> cold;
+    for (double target : targets) {
+        WaitScenario scenario;
+        scenario.start_temperature = start_temperature;
+        scenario.target            = target;
+        if (const std::optional<double> wait = simulate_wait(model, control, scenario))
+            cold.emplace_back(target, std::max(0., *wait - ramp.heat_time(start_temperature, target, false) + bias));
+    }
+    if (measured.empty()) {
+        points.settle = std::move(cold);
+        return points;
+    }
+    for (const auto &[target, sum] : measured)
+        points.settle.emplace_back(target, sum.first / sum.second);
+    for (const Vec2d &p : cold)
+        points.settle.emplace_back(-p.x(), p.y());
     return points;
 }
 

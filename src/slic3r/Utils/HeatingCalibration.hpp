@@ -11,7 +11,8 @@
 
 namespace Slic3r {
 
-// Uses Moonraker to time Klipper's M109/M190 and sample full-power heating.
+// Uses Moonraker to record one full-power heating pass, time Klipper's M109/M190 waits on it, and fit a
+// heater model from the recording.
 class HeatingCalibration
 {
 public:
@@ -21,20 +22,18 @@ public:
         bool        use_https{false};
         int         port{7125};
         std::string api_key;
-        double      nozzle_min{50.};
-        double      nozzle_max{250.};
-        double      bed_min{35.};
+        double      nozzle_min{30.};
+        double      nozzle_max{300.};
+        double      bed_min{30.};
         double      bed_max{100.};
-        int         targets{4};
-        int         repetitions{3};
         std::vector<Vec2d> bed_area;
     };
 
     struct Status
     {
         std::string message;
-        int         cycle{0}; // 1-based; 0 during setup
-        int         cycles{0};
+        int         step{0}; // 1-based; 0 during setup
+        int         steps{0};
         double      nozzle_temperature{0.};
         double      nozzle_target{0.};
         double      bed_temperature{0.};
@@ -57,14 +56,12 @@ public:
     void cancel() { m_cancelled = true; }
     bool waiting_for_firmware() const { return m_waiting_for_firmware; }
 
-    static std::vector<std::pair<double, double>> cycle_targets(const Params &params);
-
 private:
     struct HeaterInfo
     {
-        double max_power{1.};
-        double min_temp{0.};
-        double max_temp{0.};
+        HeaterControl control;
+        double        min_temp{0.};
+        double        max_temp{0.};
     };
     struct Reading
     {
@@ -85,7 +82,8 @@ private:
     std::string move_to(const Vec2d &point) const;
 
     void cool_down(const Reading &start);
-    void heat(double nozzle_target, double bed_target, HeatingRun &nozzle_run, HeatingRun &bed_run);
+    // Streams readings until `stop`: over a websocket on http, else by polling.
+    void sample(const std::atomic<bool> &stop, const std::function<void(const Reading &)> &on_reading) const;
 
     Params            m_params;
     StatusFn          m_on_status;
@@ -93,8 +91,8 @@ private:
     std::atomic<bool> m_waiting_for_firmware{false};
     HeaterInfo        m_nozzle;
     HeaterInfo        m_bed;
-    int               m_cycle{0};
-    int               m_cycles{0};
+    int               m_step{0};
+    int               m_steps{0};
     Vec2d             m_park{Vec2d::Zero()};
     Vec3d             m_gcode_offset{Vec3d::Zero()};
 };

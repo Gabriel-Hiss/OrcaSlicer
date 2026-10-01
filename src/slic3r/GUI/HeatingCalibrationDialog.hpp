@@ -49,8 +49,6 @@ private:
     TextInput   *m_nozzle_max;
     TextInput   *m_bed_min;
     TextInput   *m_bed_max;
-    TextInput   *m_targets;
-    TextInput   *m_repetitions;
     wxStaticText *m_status;
     wxStaticText *m_temperatures;
     wxStaticText *m_result_text;

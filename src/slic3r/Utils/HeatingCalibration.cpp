@@ -9,6 +9,11 @@
 #include "slic3r/GUI/format.hpp"
 
 #include <boost/log/trivial.hpp>
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/websocket.hpp>
+#include <atomic>
+#include <mutex>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -19,9 +24,16 @@
 
 using json = nlohmann::json;
 
-namespace Slic3r {
+namespace beast     = boost::beast;
+namespace websocket = beast::websocket;
+namespace net       = boost::asio;
+using tcp           = net::ip::tcp;
 
+namespace Slic3r {
 namespace {
+constexpr double hold_time = 30.; // s the nozzle idles between steps, so the next step starts from a settled heater
+constexpr int    staircase_steps = 4;
+constexpr double overshoot_margin = 10.; // a heater overshoots its target, and Klipper shuts down above max_temp
 
 // Park 3 mm above the bed so the part fan blows on it and on the bed sensor.
 constexpr double park_z = 3.;
@@ -42,23 +54,17 @@ double number_or(const json &object, const char *key, double fallback)
     return it != object.end() && it->is_number() ? it->get<double>() : fallback;
 }
 
+std::string string_or(const json &object, const char *key, const std::string &fallback)
+{
+    const auto it = object.find(key);
+    return it != object.end() && it->is_string() ? it->get<std::string>() : fallback;
+}
+
 } // namespace
 
 HeatingCalibration::HeatingCalibration(Params params, StatusFn on_status)
     : m_params(std::move(params)), m_on_status(std::move(on_status))
 {}
-
-std::vector<std::pair<double, double>> HeatingCalibration::cycle_targets(const Params &params)
-{
-    std::vector<std::pair<double, double>> targets;
-    for (int k = 1; k <= params.targets; ++k) {
-        const double nozzle = std::round(params.nozzle_min + (params.nozzle_max - params.nozzle_min) * k / params.targets);
-        const double bed    = std::round(params.bed_min + (params.bed_max - params.bed_min) * k / params.targets);
-        if (targets.empty() || (targets.back().first != nozzle && targets.back().second != bed))
-            targets.emplace_back(nozzle, bed);
-    }
-    return targets;
-}
 
 std::string HeatingCalibration::base_url() const { return (m_params.use_https ? "https://" : "http://") + m_params.host + ":" + std::to_string(m_params.port); }
 
@@ -151,8 +157,8 @@ void HeatingCalibration::report(const std::string &message, double nozzle_target
 {
     Status status;
     status.message            = message;
-    status.cycle              = m_cycle;
-    status.cycles             = m_cycles;
+    status.step               = m_step;
+    status.steps              = m_steps;
     status.nozzle_temperature = reading.nozzle;
     status.nozzle_target      = nozzle_target;
     status.bed_temperature    = reading.bed;
@@ -197,81 +203,89 @@ void HeatingCalibration::cool_down(const Reading &start)
     }
 }
 
-void HeatingCalibration::heat(double nozzle_target, double bed_target, HeatingRun &nozzle_run, HeatingRun &bed_run)
+void HeatingCalibration::sample(const std::atomic<bool> &stop, const std::function<void(const Reading &)> &on_reading) const
 {
-    run_gcode("M107");
-    nozzle_run = HeatingRun{nozzle_target};
-    bed_run    = HeatingRun{bed_target};
-    const double start = read_heaters().eventtime;
-    run_gcode("M140 S" + fmt_temp(bed_target) + "\nM104 T0 S" + fmt_temp(nozzle_target));
-
-    // Klipper's settle check uses raw sensor readings unavailable through Moonraker.
-    // Time the firmware waits directly while another thread samples the ramp.
-    std::atomic<bool>  stop{false};
-    std::atomic<bool>  sampler_failed{false};
-    std::exception_ptr sampler_error;
-    std::thread        sampler([&]() {
+    bool subscribed = false;
+    if (!m_params.use_https) {
         try {
+            net::io_context   ioc;
+            tcp::resolver     resolver{ioc};
+            beast::tcp_stream tcp_stream{ioc};
+            tcp_stream.expires_after(std::chrono::seconds(5));
+            tcp_stream.connect(resolver.resolve(m_params.host, std::to_string(m_params.port)));
+
+            websocket::stream<beast::tcp_stream> ws{std::move(tcp_stream)};
+            ws.set_option(websocket::stream_base::decorator([&](websocket::request_type &request) {
+                if (!m_params.api_key.empty())
+                    request.set("X-Api-Key", m_params.api_key);
+            }));
+            ws.handshake(m_params.host + ":" + std::to_string(m_params.port), "/websocket");
+            ws.text(true);
+            ws.write(net::buffer(json{{"jsonrpc", "2.0"},
+                                      {"method", "printer.objects.subscribe"},
+                                      {"params", {{"objects", {{"extruder", {"temperature", "power"}}, {"heater_bed", {"temperature", "power"}}}}}},
+                                      {"id", 1}}
+                                         .dump()));
+
+            Reading reading;
+            auto merge = [&](const json &status, const json &eventtime) {
+                if (!status.is_object())
+                    return;
+                auto read = [&](const char *heater, const char *key, double &value) {
+                    if (const auto object = status.find(heater); object != status.end() && object->is_object())
+                        if (const auto field = object->find(key); field != object->end() && field->is_number())
+                            value = field->get<double>();
+                };
+                read("extruder", "temperature", reading.nozzle);
+                read("extruder", "power", reading.nozzle_power);
+                read("heater_bed", "temperature", reading.bed);
+                read("heater_bed", "power", reading.bed_power);
+                if (eventtime.is_number())
+                    reading.eventtime = eventtime.get<double>();
+                if (subscribed)
+                    on_reading(reading);
+            };
             while (!stop) {
-                const Reading reading = read_heaters();
-                const double  time    = reading.eventtime - start;
-                nozzle_run.samples.push_back({time, reading.nozzle, reading.nozzle_power});
-                bed_run.samples.push_back({time, reading.bed, reading.bed_power});
-                report(_u8L("Heating"), nozzle_target, bed_target, reading);
-                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                // Klipper reports at least twice a second while heaters are on.
+                ws.next_layer().expires_after(std::chrono::seconds(5));
+                beast::flat_buffer buffer;
+                ws.read(buffer);
+                const json message = json::parse(beast::buffers_to_string(buffer.data()), nullptr, false);
+                if (!message.is_object())
+                    continue;
+                if (const auto result = message.find("result"); result != message.end() && message.value("id", 0) == 1 && result->is_object()) {
+                    const auto status = result->find("status");
+                    if (status != result->end()) {
+                        subscribed = false;
+                        merge(*status, result->value("eventtime", json()));
+                        subscribed = true;
+                        on_reading(reading);
+                    }
+                } else if (message.value("method", "") == "notify_status_update" && message.contains("params") && message["params"].size() >= 2)
+                    merge(message["params"][0], message["params"][1]);
             }
-        } catch (...) {
-            sampler_error  = std::current_exception();
-            sampler_failed = true;
+            ws.next_layer().expires_after(std::chrono::seconds(1));
+            beast::error_code ec;
+            ws.close(websocket::close_code::normal, ec);
+            return;
+        } catch (const std::exception &e) {
+            if (subscribed)
+                throw;
+            BOOST_LOG_TRIVIAL(warning) << "Heating calibration: websocket unavailable, polling instead: " << e.what();
         }
-    });
-    auto wait = [&](const std::string &script) {
-        m_waiting_for_firmware = true;
-        try {
-            check_cancelled();
-            // Cancelling HTTP cannot stop a firmware wait.
-            run_gcode(script, heating_timeout, false);
-            m_waiting_for_firmware = false;
-        } catch (...) {
-            m_waiting_for_firmware = false;
-            throw;
-        }
-        check_cancelled();
-        if (sampler_failed)
-            throw RuntimeError(_u8L("Connection to printer lost during heating."));
-        return read_heaters().eventtime - start;
-    };
-
-    try {
-        // Waiting for the faster nozzle first allows both waits to be timed.
-        nozzle_run.release = wait("M109 T0 S" + fmt_temp(nozzle_target));
-        bed_run.release    = wait("M190 S" + fmt_temp(bed_target));
-    } catch (...) {
-        stop = true;
-        sampler.join();
-        throw;
     }
-    stop = true;
-    sampler.join();
-
-    // If the bed already settled, M190 returns immediately; use the first sample within 1 °C.
-    if (bed_run.release - nozzle_run.release < 1.)
-        for (const HeatingSample &sample : bed_run.samples)
-            if (sample.temperature >= bed_target - 1.) {
-                bed_run.release = std::min(bed_run.release, sample.time);
-                break;
-            }
-    BOOST_LOG_TRIVIAL(info) << "Heating calibration: nozzle " << nozzle_target << " released after " << nozzle_run.release
-                            << " s, bed " << bed_target << " after " << bed_run.release << " s";
+    while (!stop) {
+        on_reading(read_heaters());
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
 }
 
 HeatingCalibration::Result HeatingCalibration::run()
 {
     if (m_params.nozzle_max - m_params.nozzle_min < 10. || m_params.bed_max - m_params.bed_min < 10.)
         throw RuntimeError(_u8L(u8"Nozzle and bed ranges must each span at least 10 \u2103."));
-    const auto targets = cycle_targets(m_params);
-    m_cycle  = 0;
-    m_cycles = int(targets.size()) * m_params.repetitions;
+    m_step  = 0;
+    m_steps = 0;
 
     const json info = json::parse(get("/printer/info"))["result"];
     if (info.value("state", "") != "ready")
@@ -288,9 +302,15 @@ HeatingCalibration::Result HeatingCalibration::run()
         throw RuntimeError(_u8L("Printer needs both [extruder] and [heater_bed] sections."));
     auto heater_info = [](const json &section) {
         HeaterInfo heater;
-        heater.max_power = section.value("max_power", 1.);
-        heater.min_temp  = section.value("min_temp", 0.);
-        heater.max_temp  = section.value("max_temp", 0.);
+        heater.control.pid         = string_or(section, "control", "") == "pid";
+        heater.control.kp          = number_or(section, "pid_kp", 0.);
+        heater.control.ki          = number_or(section, "pid_ki", 0.);
+        heater.control.kd          = number_or(section, "pid_kd", 0.);
+        heater.control.max_power   = number_or(section, "max_power", 1.);
+        heater.control.smooth_time = number_or(section, "smooth_time", 1.);
+        heater.control.max_delta   = number_or(section, "max_delta", 2.);
+        heater.min_temp            = number_or(section, "min_temp", 0.);
+        heater.max_temp            = number_or(section, "max_temp", 0.);
         return heater;
     };
     m_nozzle = heater_info(settings["extruder"]);
@@ -301,10 +321,20 @@ HeatingCalibration::Result HeatingCalibration::run()
         if (target > heater.max_temp)
             throw RuntimeError(format(_u8L(u8"%1% target exceeds max_temp %2% \u2103."), name, heater.max_temp));
     };
-    for (const auto &[nozzle_target, bed_target] : targets) {
-        validate_target("extruder", nozzle_target, m_nozzle);
-        validate_target("heater_bed", bed_target, m_bed);
+    validate_target("heater_bed", m_params.bed_max, m_bed);
+    m_params.nozzle_max = std::min(m_params.nozzle_max, m_nozzle.max_temp - overshoot_margin);
+    if (m_params.nozzle_max - m_params.nozzle_min < 10.)
+        throw RuntimeError(_u8L(u8"Nozzle and bed ranges must each span at least 10 \u2103."));
+    std::vector<double> nozzle_steps;
+    for (int k = 1; k <= staircase_steps; ++k) {
+        const double target = k == staircase_steps ? m_params.nozzle_max
+                                                   : std::round((m_params.nozzle_min + (m_params.nozzle_max - m_params.nozzle_min) * k / staircase_steps) / 10.) * 10.;
+        if (target > (nozzle_steps.empty() ? m_params.nozzle_min : nozzle_steps.back()) + 5.) {
+            validate_target("extruder", target, m_nozzle);
+            nozzle_steps.push_back(target);
+        }
     }
+    m_steps = 1 + int(nozzle_steps.size());
     const double idle_timeout = number_or(status.value("idle_timeout", json::object()), "idle_timeout",
                                           settings.contains("idle_timeout") ? number_or(settings["idle_timeout"], "timeout", 600.) : 600.);
 
@@ -365,7 +395,9 @@ HeatingCalibration::Result HeatingCalibration::run()
             std::rethrow_exception(restore_error);
     };
 
-    std::vector<HeatingRun> nozzle_runs, bed_runs;
+    std::vector<HeatingSample> nozzle_samples, bed_samples;
+    std::vector<WaitAnchor>    nozzle_anchors, bed_anchors;
+    double                     ambient = 0.;
     try {
         // Bed cooling may exceed Klipper's idle timeout, which switches off heaters and motors.
         run_gcode("SET_IDLE_TIMEOUT TIMEOUT=" + float_to_string_decimal_point(calibration_idle_timeout, 0));
@@ -388,14 +420,97 @@ HeatingCalibration::Result HeatingCalibration::run()
                   move_to(m_park) + "\nG1 Z" +
                   float_to_string_decimal_point(park_height - m_gcode_offset.z(), 6) + " F600");
 
-        for (int repetition = 0; repetition < m_params.repetitions; ++repetition)
-            for (const auto &[nozzle_target, bed_target] : targets) {
-                ++m_cycle;
-                cool_down(read_heaters());
-                nozzle_runs.emplace_back();
-                bed_runs.emplace_back();
-                heat(nozzle_target, bed_target, nozzle_runs.back(), bed_runs.back());
+        m_step = 1;
+        cool_down(read_heaters());
+        run_gcode("M107");
+
+        // The nozzle climbs in steps and idles at each one, so every wait after the first starts from a
+        // settled warm nozzle. The bed goes straight to its maximum.
+        std::mutex   samples_mutex;
+        std::string  phase = _u8L("Heating");
+        double       nozzle_target = nozzle_steps.front(), bed_target = m_params.bed_max;
+        const Reading first  = read_heaters();
+        const double  origin = first.eventtime;
+        ambient              = std::min(first.nozzle, first.bed);
+
+        std::atomic<bool>  stop{false};
+        std::atomic<bool>  sampler_failed{false};
+        std::thread        sampler([&]() {
+            try {
+                sample(stop, [&](const Reading &reading) {
+                    std::string message;
+                    double      nozzle_goal, bed_goal;
+                    {
+                        std::lock_guard<std::mutex> lock(samples_mutex);
+                        const double time = reading.eventtime - origin;
+                        if (time >= 0. && (nozzle_samples.empty() || time > nozzle_samples.back().time)) {
+                            nozzle_samples.push_back({time, reading.nozzle, reading.nozzle_power});
+                            bed_samples.push_back({time, reading.bed, reading.bed_power});
+                        }
+                        message     = phase;
+                        nozzle_goal = nozzle_target;
+                        bed_goal    = bed_target;
+                    }
+                    report(message, nozzle_goal, bed_goal, reading);
+                });
+            } catch (...) {
+                BOOST_LOG_TRIVIAL(error) << "Heating calibration: sampling stopped";
+                sampler_failed = true;
             }
+        });
+        auto stop_sampler = [&]() {
+            stop = true;
+            sampler.join();
+        };
+        // A wait blocks until Klipper releases it. Cancelling the HTTP request cannot stop a firmware wait.
+        auto wait = [&](const std::string &script) {
+            m_waiting_for_firmware = true;
+            try {
+                check_cancelled();
+                run_gcode(script, heating_timeout, false);
+                m_waiting_for_firmware = false;
+            } catch (...) {
+                m_waiting_for_firmware = false;
+                throw;
+            }
+            check_cancelled();
+            if (sampler_failed)
+                throw RuntimeError(_u8L("Connection to printer lost during heating."));
+            return read_heaters().eventtime - origin;
+        };
+        auto set_phase = [&](const std::string &message, double nozzle_goal, double bed_goal) {
+            std::lock_guard<std::mutex> lock(samples_mutex);
+            phase         = message;
+            nozzle_target = nozzle_goal;
+            bed_target    = bed_goal;
+        };
+
+        try {
+            run_gcode("M140 S" + fmt_temp(m_params.bed_max));
+            double previous = 0., release = 0.;
+            for (size_t i = 0; i < nozzle_steps.size(); ++i) {
+                const double target = nozzle_steps[i];
+                m_step              = 2 + int(i);
+                set_phase(_u8L("Heating"), target, m_params.bed_max);
+                run_gcode("M104 T0 S" + fmt_temp(target));
+                const double set = read_heaters().eventtime - origin;
+                release          = wait("M109 T0 S" + fmt_temp(target));
+                // The first step starts cold and Klipper sent M104 about 0.4 s before it began to wait.
+                nozzle_anchors.push_back({{first.nozzle, previous, i == 0 ? 0.4 : set, target}, release - set + (i == 0 ? 0.4 : 0.)});
+                previous = target;
+                BOOST_LOG_TRIVIAL(info) << "Heating calibration: nozzle " << target << " released after " << release - set << " s";
+                if (i + 1 < nozzle_steps.size())
+                    sleep(hold_time);
+            }
+
+            const double bed_release = wait("M190 S" + fmt_temp(m_params.bed_max));
+            bed_anchors.push_back({{first.bed, m_params.bed_max, release, m_params.bed_max}, bed_release - release});
+            BOOST_LOG_TRIVIAL(info) << "Heating calibration: bed released after " << bed_release - release << " s";
+        } catch (...) {
+            stop_sampler();
+            throw;
+        }
+        stop_sampler();
     } catch (...) {
         try {
             cleanup();
@@ -406,9 +521,20 @@ HeatingCalibration::Result HeatingCalibration::run()
     }
     cleanup();
 
-    Result result{fit_heater_curve(nozzle_runs, m_nozzle.max_power), fit_heater_curve(bed_runs, m_bed.max_power)};
+    report(_u8L("Fitting heater curves"), 0., 0., read_heaters());
+    Result result;
+    for (const bool nozzle : {true, false}) {
+        const HeaterInfo &heater  = nozzle ? m_nozzle : m_bed;
+        const std::vector<HeatingSample> &samples = nozzle ? nozzle_samples : bed_samples;
+        const HeaterModel model = fit_heater_model(samples, ambient, nozzle, heater.control.smooth_time);
+        if (!model.valid())
+            throw RuntimeError(_u8L("Could not fit a heater model to the recorded heating pass."));
+        (nozzle ? result.nozzle : result.bed) = heater_curve(model, heater.control, samples.front().temperature,
+                                                             nozzle ? m_params.nozzle_max : m_params.bed_max,
+                                                             nozzle ? nozzle_anchors : bed_anchors);
+    }
     if (!HeaterCurve(result.nozzle.ramp, {}).valid() || !HeaterCurve(result.bed.ramp, {}).valid())
-        throw RuntimeError(_u8L("Not enough full-power heating data to fit a curve."));
+        throw RuntimeError(_u8L("Could not fit a heater model to the recorded heating pass."));
     return result;
 }
 
